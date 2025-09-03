@@ -173,3 +173,8 @@ sphinx_*/
 
 # Rust analyzer configuration
 /rust-project.json
+
+# Personal files
+MULTISWAP_GUIDE.md
+MULTISWAP_GUIDE_CN.md
+kernel_changes_diff.txt
