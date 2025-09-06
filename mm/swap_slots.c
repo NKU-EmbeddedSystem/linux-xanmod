@@ -466,25 +466,36 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 	fast_left = max(cache->fast_left, (long)0);
 	if (entry_is_entry_ext(folio->shadow_ext) == 1){
 		shadow_ext = (struct shadow_entry*)folio->shadow_ext;
-		gen0 = shadow_ext->hist_ts[0];
-		gen1 = shadow_ext->hist_ts[1];
-		unsigned short avggen = gen0;
-		if (gen1 > 0) avggen = (gen1 + avggen) / 2;
-		if (gen1 > 0 && gen0 > 0)
+		unsigned short refault_count = shadow_ext->hist_ts[SE_HIST_REFAULT_COUNT];
+		unsigned short avg_distance = shadow_ext->hist_ts[SE_HIST_AVG_DISTANCE];
+		
+		/* Use average distance for decision making instead of generation values */
+		unsigned short avggen = avg_distance;
+		
+		if (refault_count > 0 && avg_distance < SE_HIST_INITIAL_AVG_DIST)
 			count_memcg_folio_events(folio, LEAF7, 1);
-		else if (gen0 > 0 & gen1 == 0)
+		else if (refault_count == 0)
 			count_memcg_folio_events(folio, LEAF6, 1);
 
-		// if (avggen >= 25 || (avggen >= 15 && gen1 > 0)){
-		dec_tree_result = 1;
-		if ((avggen > 10 && gen1 > 10 && gen0 > 10) || avggen > 20){
+		/* 
+		 * Decision logic based on refault patterns:
+		 * - High average distance with refaults = cold page, use slow swap
+		 * - Low average distance = hot page, prefer fast swap
+		 * - No refault history = unknown, be conservative
+		 */
+		dec_tree_result = 1; // Default: use fast swap
+		
+		if (refault_count > 0 && avg_distance > 20){
+			/* High average distance with refaults - cold page */
 			dec_tree_result = 0;
 			count_memcg_folio_events(folio, LEAF2, 1);
-		} else if (avggen <= 7 || gen0 <= 5 || gen1 <= 5){
+		} else if (refault_count > 0 && avg_distance <= 7){
+			/* Low average distance - hot page, definitely use fast swap */
 			dec_tree_result = 1;
 			count_memcg_folio_events(folio, LEAF1, 1);
 		} else {
-			if (avggen <= 10){
+			if (avg_distance <= 10){
+				/* Moderate average distance - consider fast swap space availability */
 				if (fast_left >= 32){
 					dec_tree_result = 1;
 					count_memcg_folio_events(folio, LEAF3, 1);
@@ -495,6 +506,7 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 				}
 			}
 			else{
+				/* Higher average distance - be more selective about fast swap usage */
 				if (fast_left >= 64){
 					dec_tree_result = 1;
 				}

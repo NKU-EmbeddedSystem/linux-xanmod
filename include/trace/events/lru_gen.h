@@ -535,18 +535,18 @@ TRACE_EVENT(shadow_ext_transfer,
 		__entry->swap_entry	= swap_entry;
 	),
 
-	TP_printk("entry[%lx] folio@[%lx]{memcg:%d} se{%p}[hist[%d][%d][%d]]<=se{%p}hist[%d][%d][%d]]", 
+	TP_printk("entry[%lx] folio@[%lx]{memcg:%d} se{%p}[cnt:%d,avg:%d,evict:%d]<=se{%p}[cnt:%d,avg:%d,evict:%d]", 
 				__entry->swap_entry,
 				(((unsigned long)(__entry->folio)) & (0xffffffffffff)), 
 				(unsigned short)__entry->cgroup_id,
 				__entry->se_new,
 				// __entry->se_new->memcg_id, 
-				__entry->se_new->hist_ts[0], 
-				__entry->se_new->hist_ts[1], __entry->se_new->hist_ts[2],
+				__entry->se_new->hist_ts[SE_HIST_REFAULT_COUNT], 
+				__entry->se_new->hist_ts[SE_HIST_AVG_DISTANCE], __entry->se_new->hist_ts[SE_HIST_EVICTION_TS],
 				__entry->se_old,
 				// __entry->se_old->memcg_id, 
-				__entry->se_old->hist_ts[0], 
-				__entry->se_old->hist_ts[1], __entry->se_old->hist_ts[2]
+				__entry->se_old->hist_ts[SE_HIST_REFAULT_COUNT], 
+				__entry->se_old->hist_ts[SE_HIST_AVG_DISTANCE], __entry->se_old->hist_ts[SE_HIST_EVICTION_TS]
 			 )
 );
 
@@ -595,7 +595,7 @@ TRACE_EVENT(folio_ws_chg_se,
 
 	TP_printk("[%s%s]left[%ld] entry[%lx] va[%lx]->folio@[%lx]{[%s]ra[%d]gen[%d]}\
 {memcg:%d}min_seq[%lu];ref[%d];tier[%d] \
-se{%p}[hist[%d][%d][%d]]", 
+se{%p}[cnt:%d,avg:%d,evict:%d]", 
                 __entry->in ? "RE<=" : "EV=>",
 				__entry->swap_level == 1 ? "f" : (
 				__entry->swap_level == 0 ? "m" : (
@@ -613,9 +613,9 @@ se{%p}[hist[%d][%d][%d]]",
 				(__entry->token >> LRU_REFS_WIDTH),
 				__entry->refs, __entry->tiers,
 				__entry->se,
-				__entry->se->hist_ts[0], 
-				__entry->se->hist_ts[1], 
-				__entry->se->hist_ts[2])
+				__entry->se->hist_ts[SE_HIST_REFAULT_COUNT], 
+				__entry->se->hist_ts[SE_HIST_AVG_DISTANCE], 
+				__entry->se->hist_ts[SE_HIST_EVICTION_TS])
 );
 #endif
 TRACE_EVENT(folio_ws_chg,

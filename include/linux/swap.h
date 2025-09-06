@@ -387,9 +387,10 @@ static inline struct shadow_entry* shadow_entry_alloc(void){
 		entry_ext->magic = (unsigned short)((unsigned long)(entry_ext) & 0xFFFF);
 		entry_ext->shadow = NULL;
 #ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
-		for (int i = 0; i < SE_HIST_SIZE; i++){
-			entry_ext->hist_ts[i] = 0;
-		}
+		/* Initialize with conservative defaults */
+		entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = 0;
+		entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST;
+		entry_ext->hist_ts[SE_HIST_EVICTION_TS] = 0;
 		// entry_ext->flag = 0;
 #endif
 #ifdef CONFIG_LRU_GEN_SHADOW_ENTRY_REF_CTRL

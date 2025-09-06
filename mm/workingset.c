@@ -294,16 +294,16 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 			_memcgid = _entry & ((1UL << MEM_CGROUP_ID_SHIFT) - 1);
 
 			if (memcgid == _memcgid){ //match
-				for(i = 0; i < SE_HIST_SIZE - 1; i++){
-					entry_ext->hist_ts[i+1] = old_entry_ext->hist_ts[i];
-				}
-				entry_ext->hist_ts[0] = min_seq % 65535;
+				/* Transfer historical data from previous shadow entry */
+				entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = old_entry_ext->hist_ts[SE_HIST_REFAULT_COUNT];
+				entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = old_entry_ext->hist_ts[SE_HIST_AVG_DISTANCE];
+				entry_ext->hist_ts[SE_HIST_EVICTION_TS] = min_seq % 0xFFFF;
 			}
 			else{
-				for(i = 1; i < SE_HIST_SIZE; i++){
-					entry_ext->hist_ts[i] = 0;
-				}
-				entry_ext->hist_ts[0] = min_seq % 65535;
+				/* Different memcg - initialize with conservative defaults */
+				entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = 0;
+				entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST;
+				entry_ext->hist_ts[SE_HIST_EVICTION_TS] = min_seq % 0xFFFF;
 			}
 			trace_shadow_ext_transfer(folio, memcgid, entry_ext, old_entry_ext, entry.val);
 			if (swp_entry_test_ext(entry))
@@ -313,10 +313,10 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 			// trace_shadow_entry_free(entry_ext, 12);	
 		}
 		else{
-			for(i = 1; i < SE_HIST_SIZE; i++){
-				entry_ext->hist_ts[i] = 0;
-			}
-			entry_ext->hist_ts[0] = min_seq % 65535;
+			/* No previous shadow entry - initialize with conservative defaults */
+			entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = 0;
+			entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST;
+			entry_ext->hist_ts[SE_HIST_EVICTION_TS] = min_seq % 0xFFFF;
 		}
 #endif
 	}
@@ -350,7 +350,7 @@ static void unpack_shadow_ext(void *shadow, int *memcgidp, pg_data_t **pgdat,
 	else if (entry_is_entry_ext_debug(shadow) > 0){
 		entry_ext = (struct shadow_entry*)shadow;
 		entry = xa_to_value(entry_ext->shadow);
-		*last_hist = entry_ext->hist_ts[0];
+		*last_hist = entry_ext->hist_ts[SE_HIST_AVG_DISTANCE];
 	}
 	else{
 		pr_err("unpack_shadow_ext xa err %p", shadow);
@@ -539,8 +539,32 @@ static void lru_gen_refault(struct folio *folio, void *shadow, int* try_free_ent
 	/*DJL ADD BEGIN*/
 	if (entry_is_entry_ext(shadow) > 0){
 		struct shadow_entry* entry_ext = (struct shadow_entry*)shadow;
-		entry_ext->hist_ts[0] = (min_seq % 0xFFFF - entry_ext->hist_ts[0]) % 0xFFFF;
-		lasthist = entry_ext->hist_ts[0];
+		unsigned short current_refault_dist;
+		unsigned short refault_count;
+		unsigned short old_avg_distance;
+		unsigned short new_avg_distance;
+		
+		/* Calculate current refault distance */
+		current_refault_dist = (min_seq % 0xFFFF - entry_ext->hist_ts[SE_HIST_EVICTION_TS]) % 0xFFFF;
+		
+		/* Update refault statistics */
+		refault_count = entry_ext->hist_ts[SE_HIST_REFAULT_COUNT];
+		old_avg_distance = entry_ext->hist_ts[SE_HIST_AVG_DISTANCE];
+		
+		if (refault_count == 0) {
+			/* First refault - replace initial conservative assumption */
+			new_avg_distance = current_refault_dist;
+		} else {
+			/* Calculate new running average: new_avg = (old_avg * count + current) / (count + 1) */
+			new_avg_distance = ((unsigned long)old_avg_distance * refault_count + current_refault_dist) / (refault_count + 1);
+		}
+		
+		/* Update shadow entry with new statistics */
+		entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = refault_count + 1;
+		entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = new_avg_distance;
+		/* Note: SE_HIST_EVICTION_TS will be updated on next eviction */
+		
+		lasthist = new_avg_distance;
 	}
 
 	if (lasthist == ULONG_MAX){
@@ -549,7 +573,8 @@ static void lru_gen_refault(struct folio *folio, void *shadow, int* try_free_ent
 		dist_ret = dist;
 	}
 	else{
-		dist = lasthist;//((min_seq % 0xFFFF) - lasthist) % 0xFFFF;
+		/* Use the average distance for decision making */
+		dist = lasthist;
 		dist_ret = dist + MAX_NR_GENS;
 	}
 	swp_entry_t temp_entry;

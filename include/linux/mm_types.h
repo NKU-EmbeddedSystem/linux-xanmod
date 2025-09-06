@@ -1032,6 +1032,10 @@ typedef struct {
 } swp_entry_t;
 
 #define SE_HIST_SIZE	3
+#define SE_HIST_REFAULT_COUNT	0	/* Number of refaults that have occurred */
+#define SE_HIST_AVG_DISTANCE	1	/* Average refault distance across all refaults */
+#define SE_HIST_EVICTION_TS	2	/* Eviction-time min_seq for current refault distance calculation */
+#define SE_HIST_INITIAL_AVG_DIST	0xFFFF	/* Initial conservative assumption for average distance */
 #define SHADOW_EXT_FLAG_STALE_SAVED 0x1
 typedef struct shadow_entry{
 	unsigned short magic;
