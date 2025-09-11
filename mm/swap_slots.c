@@ -472,7 +472,7 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 		/* Use average distance for decision making instead of generation values */
 		unsigned short avggen = avg_distance;
 		
-		if (refault_count > 0 && avg_distance < SE_HIST_INITIAL_AVG_DIST)
+		if (refault_count > 0 && avg_distance < SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR)
 			count_memcg_folio_events(folio, LEAF7, 1);
 		else if (refault_count == 0)
 			count_memcg_folio_events(folio, LEAF6, 1);

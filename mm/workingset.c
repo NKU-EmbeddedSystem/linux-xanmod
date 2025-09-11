@@ -300,9 +300,9 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 				entry_ext->hist_ts[SE_HIST_EVICTION_TS] = min_seq % 0xFFFF;
 			}
 			else{
-				/* Different memcg - initialize with conservative defaults */
+				/* Different memcg - initialize with conservative defaults scaled by 1000x */
 				entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = 0;
-				entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST;
+				entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR;
 				entry_ext->hist_ts[SE_HIST_EVICTION_TS] = min_seq % 0xFFFF;
 			}
 			trace_shadow_ext_transfer(folio, memcgid, entry_ext, old_entry_ext, entry.val);
@@ -313,9 +313,9 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 			// trace_shadow_entry_free(entry_ext, 12);	
 		}
 		else{
-			/* No previous shadow entry - initialize with conservative defaults */
+			/* No previous shadow entry - initialize with conservative defaults scaled by 1000x */
 			entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = 0;
-			entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST;
+			entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR;
 			entry_ext->hist_ts[SE_HIST_EVICTION_TS] = min_seq % 0xFFFF;
 		}
 #endif
@@ -552,11 +552,12 @@ static void lru_gen_refault(struct folio *folio, void *shadow, int* try_free_ent
 		old_avg_distance = entry_ext->hist_ts[SE_HIST_AVG_DISTANCE];
 		
 		if (refault_count == 0) {
-			/* First refault - replace initial conservative assumption */
-			new_avg_distance = current_refault_dist;
+			/* First refault - replace initial conservative assumption, scaled by 1000x */
+			new_avg_distance = (unsigned short)((unsigned long)current_refault_dist * SE_HIST_SCALE_FACTOR);
 		} else {
-			/* Calculate new running average: new_avg = (old_avg * count + current) / (count + 1) */
-			new_avg_distance = ((unsigned long)old_avg_distance * refault_count + current_refault_dist) / (refault_count + 1);
+			/* Calculate new running average scaled by 1000x using unsigned long to prevent overflow */
+			unsigned long temp_avg = ((unsigned long)old_avg_distance * refault_count + (unsigned long)current_refault_dist * SE_HIST_SCALE_FACTOR) / (refault_count + 1);
+			new_avg_distance = (unsigned short)temp_avg;
 		}
 		
 		/* Update shadow entry with new statistics */
@@ -564,6 +565,7 @@ static void lru_gen_refault(struct folio *folio, void *shadow, int* try_free_ent
 		entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = new_avg_distance;
 		/* Note: SE_HIST_EVICTION_TS will be updated on next eviction */
 		
+		/* Use scaled value directly for better precision in decisions */
 		lasthist = new_avg_distance;
 	}
 
