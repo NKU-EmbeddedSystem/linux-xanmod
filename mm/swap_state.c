@@ -2882,3 +2882,25 @@ delete_obj:
 }
 subsys_initcall(swap_init_sysfs);
 #endif
+
+/* MULTISWAP FIX: Immediate shadow cleanup to prevent slot reuse races */
+void cleanup_shadow_entry_immediate(swp_entry_t entry)
+{
+	struct address_space *address_space = swap_address_space(entry);
+	pgoff_t idx = swp_offset(entry);
+	void *shadow;
+	
+	if (!address_space)
+		return;
+	
+	xa_lock_irq(&address_space->i_pages);
+	shadow = xa_load(&address_space->i_pages, idx);
+	if (shadow && entry_is_entry_ext(shadow) == 1) {
+		/* Remove shadow entry immediately to prevent slot reuse */
+		xa_store(&address_space->i_pages, idx, NULL, GFP_ATOMIC);
+		/* MULTISWAP FIX: Count shadow entry cleanup */
+		atomic_long_inc(&shadow_entries_cleaned);
+		shadow_entry_free(shadow);
+	}
+	xa_unlock_irq(&address_space->i_pages);
+}

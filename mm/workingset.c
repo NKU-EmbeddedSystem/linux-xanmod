@@ -22,6 +22,34 @@
 #include <trace/events/lru_gen.h>
 /*DJL ADD END*/
 
+/* MULTISWAP FIX: Counters for shadow entry accounting */
+atomic_long_t shadow_entries_created = ATOMIC_LONG_INIT(0);
+atomic_long_t shadow_entries_freed = ATOMIC_LONG_INIT(0);
+atomic_long_t shadow_entries_cleaned = ATOMIC_LONG_INIT(0);
+
+/* MULTISWAP FIX: Functions to read shadow entry counters */
+long get_shadow_entries_created(void)
+{
+	return atomic_long_read(&shadow_entries_created);
+}
+
+long get_shadow_entries_freed(void)
+{
+	return atomic_long_read(&shadow_entries_freed);
+}
+
+long get_shadow_entries_cleaned(void)
+{
+	return atomic_long_read(&shadow_entries_cleaned);
+}
+
+long get_shadow_entries_balance(void)
+{
+	return atomic_long_read(&shadow_entries_created) - 
+	       atomic_long_read(&shadow_entries_freed) - 
+	       atomic_long_read(&shadow_entries_cleaned);
+}
+
 /*
  *		Double CLOCK lists
  *
@@ -282,6 +310,9 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 	eviction = (eviction << NODES_SHIFT) | pgdat->node_id;
 	eviction = (eviction << WORKINGSET_SHIFT) | workingset;
 	if (entry_ext){
+		/* MULTISWAP FIX: Count shadow entry creation */
+		atomic_long_inc(&shadow_entries_created);
+		
 		entry_ext->shadow = xa_mk_value(eviction);
 		entry_ext->magic = shadow_entry_magic ^ (unsigned short)((unsigned long)entry_ext & 0xFFFF); //valid
 #ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
@@ -309,6 +340,8 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 			if (swp_entry_test_ext(entry))
 				pr_info("[FREE]workingset_refualt entry[%lx]->folio[%p] ext[%lx](free)->[%lx] ok", 
 							entry.val, folio, (unsigned long)old_entry_ext, (unsigned long)entry_ext);
+			/* MULTISWAP FIX: Count shadow entry freeing */
+			atomic_long_inc(&shadow_entries_freed);
 			shadow_entry_free(old_entry_ext);
 			// trace_shadow_entry_free(entry_ext, 12);	
 		}
@@ -437,6 +470,8 @@ static void *lru_gen_eviction(struct folio *folio, int swap_level, long swap_spa
 #ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
 		if (folio->shadow_ext && entry_is_entry_ext(folio->shadow_ext) == 1){
 			pr_err("bug2 in pack_shadow");
+			/* MULTISWAP FIX: Count shadow entry freeing */
+			atomic_long_inc(&shadow_entries_freed);
 			shadow_entry_free(folio->shadow_ext);
 			BUG();
 		}

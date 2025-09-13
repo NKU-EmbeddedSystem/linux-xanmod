@@ -675,6 +675,19 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 void check_swap_scan_active(struct swap_info_struct *si, long left, long total);
 bool folio_free_swap(struct folio *folio);
 bool folio_free_swap_debug(struct folio *folio);
+/* MULTISWAP FIX: Shadow cleanup to prevent slot reuse races */
+void cleanup_shadow_entry_immediate(swp_entry_t entry);
+
+/* MULTISWAP FIX: Shadow entry accounting counters */
+extern atomic_long_t shadow_entries_created;
+extern atomic_long_t shadow_entries_freed; 
+extern atomic_long_t shadow_entries_cleaned;
+
+/* MULTISWAP FIX: Functions to read shadow entry counters */
+long get_shadow_entries_created(void);
+long get_shadow_entries_freed(void);
+long get_shadow_entries_cleaned(void);
+long get_shadow_entries_balance(void);
 void put_swap_folio(struct folio *folio, swp_entry_t entry);
 extern swp_entry_t get_swap_page_of_type(int);
 //DJL ADD BEGIN

@@ -4045,6 +4045,9 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 						vma, vmf->address, false);
 			page = &folio->page;
 			if (folio) {
+				/* MULTISWAP FIX: Reset folio identity to prevent over-counting */
+				ASSERT_FOLIO_SE_FREE(folio, __FILE__, __LINE__);
+				
 				__folio_set_locked(folio);
 				__folio_set_swapbacked(folio);
 
@@ -4092,7 +4095,8 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 #endif
 				}
 				else{
-					trace_folio_ws_chg(folio, vmf->address, folio_pgdat(folio), -1, 0, 0, 1, swap_level, -2, (unsigned long)entry.val);
+					/* MULTISWAP FIX: Use real_address for accurate VA recording */
+					trace_folio_ws_chg(folio, vmf->real_address, folio_pgdat(folio), -1, 0, 0, 1, swap_level, -2, (unsigned long)entry.val);
 					ASSERT_FOLIO_NO_SE(folio, __FILE__, __LINE__);
 				}
 				/*DJL ADD END*/
@@ -4142,6 +4146,8 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 				page = __read_swap_cache_async_save(entry, GFP_HIGHUSER_MOVABLE, vma, 
 							vmf->address, &page_allocated, false, &try_free_entry, false);
 				if (page_allocated){
+					/* MULTISWAP FIX: Reset folio identity for newly allocated page to prevent over-counting */
+					ASSERT_FOLIO_SE_FREE(page_folio(page), __FILE__, __LINE__);
 #ifdef CONFIG_LRU_GEN_STALE_SWP_ENTRY_SAVIOR_DEBUG
 					// pr_info("__read_swap_cache_async_save folio[%p] remapped entry[%lx] refcount[%d]", 
 					// 			page_folio(page), entry.val, folio_ref_count(page_folio(page)));
@@ -4175,6 +4181,8 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			//we don't do anything like delete remap here
 			if (likely(page)){
 				folio = page_folio(page);
+				/* MULTISWAP FIX: Reset folio identity from swapcache to prevent over-counting */
+				ASSERT_FOLIO_SE_FREE(folio, __FILE__, __LINE__);
 			}
 			else{
 				folio = NULL;
