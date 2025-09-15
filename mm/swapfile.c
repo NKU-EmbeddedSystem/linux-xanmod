@@ -2016,13 +2016,7 @@ bool folio_free_swap(struct folio *folio)
 		pr_info("folio_free_swap folio[%p]pri[%lx]$[%d]", 
 				folio, folio_swap_entry(folio).val, folio_test_swapcache(folio));
 #endif
-	/* MULTISWAP FIX: Get swap entry before cache deletion */
-	swp_entry_t entry = folio_swap_entry(folio);
 	delete_from_swap_cache(folio);
-	
-	/* MULTISWAP FIX: Immediately clean up shadow entry to prevent slot reuse races */
-	cleanup_shadow_entry_immediate(entry);
-	
 	folio_set_dirty(folio);
 	return true;
 }

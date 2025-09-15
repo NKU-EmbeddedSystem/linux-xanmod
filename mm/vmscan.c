@@ -1442,7 +1442,7 @@ static int __remove_mapping(struct address_space *mapping, struct folio *folio,
 		shadow_ext = shadow_entry_alloc();
 #else
 		shadow_ext = NULL;
-#endif 
+#endif
 	}
 	else{
 		shadow_ext = NULL; //stale case
@@ -1535,7 +1535,7 @@ static int __remove_mapping(struct address_space *mapping, struct folio *folio,
 				//should skip eviction, because this is a memory pass-through
 				// if (entry_is_entry_ext(folio->shadow_ext) < 0){
 				// 	pr_err("workingset_eviction folio[%p]->shadow[%p] failing", folio, folio->shadow_ext);
-				// 	BUG();			
+				// 	BUG();
 				// }
 			}
 			else{
