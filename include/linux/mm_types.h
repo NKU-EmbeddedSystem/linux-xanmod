@@ -1031,17 +1031,18 @@ typedef struct {
 	unsigned long val;
 } swp_entry_t;
 
-#define SE_HIST_SIZE	3
+#define SE_HIST_SIZE	4
 #define SE_HIST_REFAULT_COUNT	0	/* Number of refaults that have occurred */
 #define SE_HIST_AVG_DISTANCE	1	/* Average refault distance across all refaults */
-#define SE_HIST_EVICTION_TS	2	/* Eviction-time min_seq for current refault distance calculation */
+#define SE_HIST_PAGE_ID	2	/* Unique page identifier that follows page through swap cycles */
+#define SE_HIST_EVICTION_TIME	3	/* Eviction-time min_seq for refault distance calculation */
 #define SE_HIST_INITIAL_AVG_DIST	65	/* Initial conservative assumption for average distance */
 #define SE_HIST_SCALE_FACTOR	1000	/* Scale factor for precision in average distance calculation */
 #define SHADOW_EXT_FLAG_STALE_SAVED 0x1
 typedef struct shadow_entry{
 	unsigned short magic;
 #ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
-	unsigned short hist_ts[SE_HIST_SIZE]; 
+	unsigned int hist_ts[SE_HIST_SIZE]; 
 #endif
 #ifdef CONFIG_LRU_GEN_SHADOW_ENTRY_REF_CTRL
 	short ref : 7; //  if this shadow_entry is currently owned by a folio

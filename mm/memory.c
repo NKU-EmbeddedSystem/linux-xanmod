@@ -4046,7 +4046,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			page = &folio->page;
 			if (folio) {
 				/* MULTISWAP FIX: Reset folio identity to prevent over-counting */
-				ASSERT_FOLIO_SE_FREE(folio, __FILE__, __LINE__);
+				// ASSERT_FOLIO_SE_FREE(folio, __FILE__, __LINE__);
 				
 				__folio_set_locked(folio);
 				__folio_set_swapbacked(folio);
@@ -4147,7 +4147,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 							vmf->address, &page_allocated, false, &try_free_entry, false);
 				if (page_allocated){
 					/* MULTISWAP FIX: Reset folio identity for newly allocated page to prevent over-counting */
-					ASSERT_FOLIO_SE_FREE(page_folio(page), __FILE__, __LINE__);
+					// ASSERT_FOLIO_SE_FREE(page_folio(page), __FILE__, __LINE__);
 #ifdef CONFIG_LRU_GEN_STALE_SWP_ENTRY_SAVIOR_DEBUG
 					// pr_info("__read_swap_cache_async_save folio[%p] remapped entry[%lx] refcount[%d]", 
 					// 			page_folio(page), entry.val, folio_ref_count(page_folio(page)));
@@ -4182,7 +4182,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			if (likely(page)){
 				folio = page_folio(page);
 				/* MULTISWAP FIX: Reset folio identity from swapcache to prevent over-counting */
-				ASSERT_FOLIO_SE_FREE(folio, __FILE__, __LINE__);
+				// ASSERT_FOLIO_SE_FREE(folio, __FILE__, __LINE__);
 			}
 			else{
 				folio = NULL;

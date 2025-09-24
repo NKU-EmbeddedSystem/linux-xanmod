@@ -466,11 +466,11 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 	fast_left = max(cache->fast_left, (long)0);
 	if (entry_is_entry_ext(folio->shadow_ext) == 1){
 		shadow_ext = (struct shadow_entry*)folio->shadow_ext;
-		unsigned short refault_count = shadow_ext->hist_ts[SE_HIST_REFAULT_COUNT];
-		unsigned short avg_distance = shadow_ext->hist_ts[SE_HIST_AVG_DISTANCE];
-		
+		unsigned int refault_count = shadow_ext->hist_ts[SE_HIST_REFAULT_COUNT];
+		unsigned int avg_distance = shadow_ext->hist_ts[SE_HIST_AVG_DISTANCE];
+
 		/* Use average distance for decision making instead of generation values */
-		unsigned short avggen = avg_distance;
+		unsigned int avggen = avg_distance;
 		
 		if (refault_count > 0 && avg_distance < SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR)
 			count_memcg_folio_events(folio, LEAF7, 1);

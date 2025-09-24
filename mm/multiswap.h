@@ -18,7 +18,7 @@ extern struct address_space *swapper_spaces_remap[];
 		>> SWAP_REMAP_ADDRESS_SPACE_SHIFT) << SWP_SPECIAL_MARK) | (swp_entry_test_special(entry)))])
 
 #define SWAPVMAX (SWP_ENTRY_ALIVE_VERSION)
-#define VMAXMASK (((1U << (SWAPVMAX * 8)) - 1) )
+#define VMAXMASK (((1ULL << ((unsigned long long)SWAPVMAX * 8ULL)) - 1ULL) )
 #define VERSION_OFFSET(v, off, vmax) (vmax * off + v)
 #define VERSION_OFFSET_SI(v, off, vmax, si) (__si_can_version(si) ?  VERSION_OFFSET(v, off, vmax) : off)
 

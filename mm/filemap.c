@@ -2161,9 +2161,9 @@ unsigned swap_scan_entries_savior(struct address_space *mapping,
 			entry_ext = (struct shadow_entry*)folio;
 			memcg_id = entry_ext_memcg_id(entry_ext);
 			if (target_memcg_id == memcg_id && !entry_ext->processed){ //match check it
-				old_seq = entry_ext->hist_ts[SE_HIST_EVICTION_TS];
+				old_seq = entry_ext->hist_ts[SE_HIST_EVICTION_TIME];
 				if (old_seq == 0) {
-					pr_err("inner swap_address shadow_ext got hist_ts[SE_HIST_EVICTION_TS] == 0");
+					pr_err("inner swap_address shadow_ext got hist_ts[SE_HIST_EVICTION_TIME] == 0");
 				}
 				if (min_seq - old_seq >= threshold){
 					trace_scan_entries_savior(memcg_id, old_seq, min_seq, threshold);

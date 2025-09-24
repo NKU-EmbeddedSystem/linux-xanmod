@@ -371,12 +371,22 @@ void workingset_age_nonresident(struct lruvec *lruvec, unsigned long nr_pages);
 void *workingset_eviction(struct folio *folio, struct mem_cgroup *target_memcg, int swap_level, long swap_space_left, struct shadow_entry* se, swp_entry_t entry);
 void workingset_refault(struct folio *folio, void *shadow, int* try_free_entry, unsigned long va, int swap_level, swp_entry_t entry, bool* abandon_shadow);
 void workingset_activation(struct folio *folio);
+void count_shadow_timeout_event(struct shadow_entry *entry_ext);
 int entry_is_entry_ext(const void *entry);
 int entry_ext_memcg_id(struct shadow_entry* entry_ext);
 int entry_is_entry_ext_debug(const void *entry);
 extern struct kmem_cache * get_shadow_entry_cache(void);
-extern const unsigned int shadow_entry_magic; 
-extern const unsigned int shadow_entry_invalidmagic; 
+extern const unsigned int shadow_entry_magic;
+extern const unsigned int shadow_entry_invalidmagic;
+
+/* Global counter for unique page IDs */
+static atomic64_t global_page_id_counter = ATOMIC64_INIT(1);
+
+static inline unsigned long get_unique_page_id(void)
+{
+	return (unsigned long)atomic64_inc_return(&global_page_id_counter);
+}
+
 static inline struct shadow_entry* shadow_entry_alloc(void){
 	struct shadow_entry* entry_ext = NULL;
 	if (unlikely(!get_shadow_entry_cache())){
@@ -390,7 +400,8 @@ static inline struct shadow_entry* shadow_entry_alloc(void){
 		/* Initialize with conservative defaults scaled by 1000x */
 		entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = 0;
 		entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR;
-		entry_ext->hist_ts[SE_HIST_EVICTION_TS] = 0;
+		entry_ext->hist_ts[SE_HIST_PAGE_ID] = get_unique_page_id();
+		entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = 0;
 		// entry_ext->flag = 0;
 #endif
 #ifdef CONFIG_LRU_GEN_SHADOW_ENTRY_REF_CTRL
@@ -420,8 +431,8 @@ static inline struct shadow_entry* folio_remove_shadow_entry(struct folio* folio
 static inline void shadow_entry_free(struct shadow_entry* entry_ext);
 static inline void ASSERT_FOLIO_SE_FREE(struct folio* folio, const char* file, const int line){
 	if (unlikely(folio->shadow_ext)){
-		pr_info("ASSERT_FOLIO_SE_FREE folio[%p]->entry[%lx] %s:%d", folio, 
-		(unsigned long)folio->shadow_ext, file, line);
+		// pr_info("ASSERT_FOLIO_SE_FREE folio[%p]->entry[%lx] %s:%d", folio, 
+		// (unsigned long)folio->shadow_ext, file, line);
 		shadow_entry_free(folio_remove_shadow_entry(folio));
 	}
 }

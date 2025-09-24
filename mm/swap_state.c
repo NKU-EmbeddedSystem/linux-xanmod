@@ -118,6 +118,10 @@ void *get_shadow_from_swap_cache_erase(swp_entry_t entry)
 	unsigned long i;
 	int entry_state = 0;
 	void *old;
+	
+	/* DEBUG: Add unconditional trace to confirm function is called */
+	// printk(KERN_ERR "DEBUG_SHADOW: ENTRY get_shadow_from_swap_cache_erase called for entry[%lx]\n", entry.val);
+	
 	xas_set_update(&xas, workingset_update_node);
 	do {
 		xas_lock_irq(&xas);
@@ -131,6 +135,7 @@ void *get_shadow_from_swap_cache_erase(swp_entry_t entry)
 				if (xa_is_value(old)) { //files
 					// xas_store(&xas, NULL);
 					// pr_info("get shadow clean shadow entry[%lx]->shadow[%p]", entry.val, old);
+					// printk(KERN_ERR "DEBUG_SHADOW: entry[%lx] file_shadow_entry - found file shadow entry\n", entry.val);
 				}
 				else{
 					entry_state = entry_is_entry_ext(old);
@@ -139,14 +144,17 @@ void *get_shadow_from_swap_cache_erase(swp_entry_t entry)
 					if (entry_state > 0){ //shadow, erased now
 						//pass
 						// pr_info("get shadow clean shadow_ext entry[%lx]->shadow_ext[%lx]", entry.val, old);
+						// printk(KERN_ERR "DEBUG_SHADOW: entry[%lx] shadow_found_success - successfully retrieved shadow entry\n", entry.val);
 					}
 					else if (-1 == entry_state){ //might be still in swapcache ?
 						pr_err("return a freed entry[%lx]->shadow[%lx]", entry.val, old);
+						// printk(KERN_ERR "DEBUG_SHADOW: entry[%lx] freed_shadow_entry - shadow entry already freed\n", entry.val);
 						BUG();
 						old = NULL;
 					}
 					else if (0 == entry_state){
 						pr_err("get_shadow_from_s$ delete origin folio entry[%lx]->folio[%p]", entry.val, old);
+						// printk(KERN_ERR "DEBUG_SHADOW: entry[%lx] not_shadow_but_folio - found folio instead of shadow\n", entry.val);
 						xas_store(&xas, old);
 						old = NULL;
 					}
@@ -164,8 +172,13 @@ void *get_shadow_from_swap_cache_erase(swp_entry_t entry)
 unlock:
 		xas_unlock_irq(&xas);
 	} while (xas_nomem(&xas, GFP_KERNEL));
-	if (!xas_error(&xas))
+	if (!xas_error(&xas)) {
+		/* DEBUG: Log the specific reason for NULL returns to understand the problem */
+		if (old == NULL) {
+			// printk(KERN_ERR "DEBUG_SHADOW: entry[%lx] swap_cache_empty - no shadow entry found\n", entry.val);
+		}
 		return old;
+	}
 	BUG();
 	return NULL;
 }
@@ -1375,8 +1388,10 @@ void clear_shadow_from_swap_cache(int type, unsigned long begin,
 				_entry = xas_store(&xas, NULL);
 				if (unlikely(old != _entry))
 					BUG();
+				/* Note: This is NOT timeout-based release, it's normal swap entry cleanup */
+				/* Timeout-based counting is done in workingset shadow shrinker */
 				shadow_entry_free(old);
-				// trace_shadow_entry_free(old, 6);	
+				// trace_shadow_entry_free(old, 6);
 				continue;
 			}
 			else if (entry_is_entry_ext(old) == 1){

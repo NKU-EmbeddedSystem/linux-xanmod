@@ -17,6 +17,7 @@
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
+#include <linux/xarray.h>
 
 /*DJL ADD BEGIN*/
 #include <trace/events/lru_gen.h>
@@ -49,6 +50,7 @@ long get_shadow_entries_balance(void)
 	       atomic_long_read(&shadow_entries_freed) - 
 	       atomic_long_read(&shadow_entries_cleaned);
 }
+
 
 /*
  *		Double CLOCK lists
@@ -220,8 +222,32 @@ static unsigned int bucket_order __read_mostly;
 static struct kmem_cache *shadow_entry_cache;
 struct kmem_cache * get_shadow_entry_cache(void){return shadow_entry_cache;}
 
-const unsigned int shadow_entry_magic = 0x4321; 
-const unsigned int shadow_entry_invalidmagic = 0x8765; 
+const unsigned int shadow_entry_magic = 0x4321;
+const unsigned int shadow_entry_invalidmagic = 0x8765;
+
+/* Helper function to count shadow entry timeout events */
+void count_shadow_timeout_event(struct shadow_entry *entry_ext)
+{
+	struct mem_cgroup *memcg = NULL;
+	unsigned long shadow_val;
+	int memcg_id;
+
+	if (!entry_ext || !entry_ext->shadow)
+		return;
+
+	/* Extract memcg from shadow entry */
+	shadow_val = xa_to_value(entry_ext->shadow);
+	shadow_val >>= WORKINGSET_SHIFT;
+	shadow_val >>= NODES_SHIFT;
+	memcg_id = shadow_val & ((1UL << MEM_CGROUP_ID_SHIFT) - 1);
+
+	/* Get memcg and increment counter for shadow timeout without refault */
+	rcu_read_lock();
+	memcg = mem_cgroup_from_id(memcg_id);
+	if (memcg)
+		memcg_memory_event(memcg, MEMCG_SHADOW_TIMEOUT_NO_REFAULT);
+	rcu_read_unlock();
+}
 
 int entry_is_entry_ext(const void *entry){
 	if (unlikely(!entry))
@@ -328,13 +354,15 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 				/* Transfer historical data from previous shadow entry */
 				entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = old_entry_ext->hist_ts[SE_HIST_REFAULT_COUNT];
 				entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = old_entry_ext->hist_ts[SE_HIST_AVG_DISTANCE];
-				entry_ext->hist_ts[SE_HIST_EVICTION_TS] = min_seq % 0xFFFF;
+				entry_ext->hist_ts[SE_HIST_PAGE_ID] = old_entry_ext->hist_ts[SE_HIST_PAGE_ID]; /* Preserve page_id */
+				entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = min_seq % 0xFFFF; /* Update eviction time */
 			}
 			else{
 				/* Different memcg - initialize with conservative defaults scaled by 1000x */
 				entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = 0;
 				entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR;
-				entry_ext->hist_ts[SE_HIST_EVICTION_TS] = min_seq % 0xFFFF;
+				entry_ext->hist_ts[SE_HIST_PAGE_ID] = old_entry_ext->hist_ts[SE_HIST_PAGE_ID]; /* Preserve page_id from old entry */
+				entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = min_seq % 0xFFFF; /* Update eviction time */
 			}
 			trace_shadow_ext_transfer(folio, memcgid, entry_ext, old_entry_ext, entry.val);
 			if (swp_entry_test_ext(entry))
@@ -349,7 +377,8 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 			/* No previous shadow entry - initialize with conservative defaults scaled by 1000x */
 			entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = 0;
 			entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR;
-			entry_ext->hist_ts[SE_HIST_EVICTION_TS] = min_seq % 0xFFFF;
+			/* Keep the page_id assigned during allocation - don't overwrite it */
+			entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = min_seq % 0xFFFF; /* Set eviction time */
 		}
 #endif
 	}
@@ -574,13 +603,13 @@ static void lru_gen_refault(struct folio *folio, void *shadow, int* try_free_ent
 	/*DJL ADD BEGIN*/
 	if (entry_is_entry_ext(shadow) > 0){
 		struct shadow_entry* entry_ext = (struct shadow_entry*)shadow;
-		unsigned short current_refault_dist;
-		unsigned short refault_count;
-		unsigned short old_avg_distance;
-		unsigned short new_avg_distance;
+		unsigned int current_refault_dist;
+		unsigned int refault_count;
+		unsigned int old_avg_distance;
+		unsigned int new_avg_distance;
 		
-		/* Calculate current refault distance */
-		current_refault_dist = (min_seq % 0xFFFF - entry_ext->hist_ts[SE_HIST_EVICTION_TS]) % 0xFFFF;
+		/* Calculate refault distance using separate eviction time field */
+		current_refault_dist = (min_seq % 0xFFFF - entry_ext->hist_ts[SE_HIST_EVICTION_TIME]) % 0xFFFF;
 		
 		/* Update refault statistics */
 		refault_count = entry_ext->hist_ts[SE_HIST_REFAULT_COUNT];
@@ -588,17 +617,17 @@ static void lru_gen_refault(struct folio *folio, void *shadow, int* try_free_ent
 		
 		if (refault_count == 0) {
 			/* First refault - replace initial conservative assumption, scaled by 1000x */
-			new_avg_distance = (unsigned short)((unsigned long)current_refault_dist * SE_HIST_SCALE_FACTOR);
+			new_avg_distance = (unsigned int)((unsigned long)current_refault_dist * SE_HIST_SCALE_FACTOR);
 		} else {
 			/* Calculate new running average scaled by 1000x using unsigned long to prevent overflow */
 			unsigned long temp_avg = ((unsigned long)old_avg_distance * refault_count + (unsigned long)current_refault_dist * SE_HIST_SCALE_FACTOR) / (refault_count + 1);
-			new_avg_distance = (unsigned short)temp_avg;
+			new_avg_distance = (unsigned int)temp_avg;
 		}
 		
 		/* Update shadow entry with new statistics */
 		entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = refault_count + 1;
 		entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = new_avg_distance;
-		/* Note: SE_HIST_EVICTION_TS will be updated on next eviction */
+		/* Note: SE_HIST_PAGE_ID remains constant throughout page lifetime */
 		
 		/* Use scaled value directly for better precision in decisions */
 		lasthist = new_avg_distance;
@@ -1141,6 +1170,36 @@ static enum lru_status shadow_lru_isolate(struct list_head *item,
 		goto out_invalid;
 	if (WARN_ON_ONCE(node->count != node->nr_values))
 		goto out_invalid;
+
+	/*
+	 * Count timeout-based shadow entry releases before deleting the node.
+	 * This is the REAL timeout release - shadow entries that haven't been
+	 * refaulted for a long time and are being reclaimed due to memory pressure.
+	 * 
+	 * node->nr_values contains the number of shadow entries in this node.
+	 * Since the comment states "nodes should only contain one or more shadow entries",
+	 * we can use this count directly for our timeout statistics.
+	 */
+	{
+		unsigned int shadow_entries_count = node->nr_values;
+		int i;
+		void *entry;
+		
+		/* Iterate through the node's slots to find and count shadow entries
+		 * XA_CHUNK_SIZE is typically 64, but let's use a safe upper bound */
+		for (i = 0; i < 64 && shadow_entries_count > 0; i++) {
+			entry = node->slots[i];
+			if (entry && !xa_is_node(entry)) {
+				/* Check if this is our shadow entry extension */
+				if (entry_is_entry_ext(entry) == 1) {
+					/* This is a real timeout release - count it */
+					count_shadow_timeout_event((struct shadow_entry *)entry);
+					shadow_entries_count--;
+				}
+			}
+		}
+	}
+
 	xa_delete_node(node, workingset_update_node);
 	__inc_lruvec_kmem_state(node, WORKINGSET_NODERECLAIM);
 

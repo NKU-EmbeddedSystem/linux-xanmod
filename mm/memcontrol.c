@@ -7049,6 +7049,10 @@ static void __memory_events_show(struct seq_file *m, atomic_long_t *events)
 		   atomic_long_read(&events[MEMCG_OOM_KILL]));
 	seq_printf(m, "oom_group_kill %lu\n",
 		   atomic_long_read(&events[MEMCG_OOM_GROUP_KILL]));
+	seq_printf(m, "shadow_timeout %lu\n",
+		   atomic_long_read(&events[MEMCG_SHADOW_TIMEOUT]));
+	seq_printf(m, "shadow_timeout_no_refault %lu\n",
+		   atomic_long_read(&events[MEMCG_SHADOW_TIMEOUT_NO_REFAULT]));
 }
 
 static int memory_events_show(struct seq_file *m, void *v)
