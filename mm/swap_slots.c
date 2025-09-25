@@ -428,9 +428,6 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 	unsigned short prio;
 	int _nr, _cur, _prio;
 	swp_entry_t* _slots;
-	int dec_tree_result;
-	long fast_left;
-	unsigned short gen0, gen1;
 	struct shadow_entry* shadow_ext;
 	/*DJL ADD END*/
 	
@@ -461,84 +458,46 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 	//shouldn't up together
 	WARN_ON_ONCE(folio_test_swappriolow(folio) && folio_test_swappriohigh(folio));
 	/*DJL ADD END*/
-#ifdef CONFIG_LRU_DEC_TREE_FOR_SWAP
-	struct dec_feature features;
-	fast_left = max(cache->fast_left, (long)0);
-	if (entry_is_entry_ext(folio->shadow_ext) == 1){
-		shadow_ext = (struct shadow_entry*)folio->shadow_ext;
-		unsigned int refault_count = shadow_ext->hist_ts[SE_HIST_REFAULT_COUNT];
-		unsigned int avg_distance = shadow_ext->hist_ts[SE_HIST_AVG_DISTANCE];
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+	int router_result = 1;
+	struct lruvec *lruvec;
+	struct mem_cgroup *memcg;
 
-		/* Use average distance for decision making instead of generation values */
-		unsigned int avggen = avg_distance;
-		
-		if (refault_count > 0 && avg_distance < SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR)
-			count_memcg_folio_events(folio, LEAF7, 1);
-		else if (refault_count == 0)
-			count_memcg_folio_events(folio, LEAF6, 1);
+	memcg = folio_memcg(folio);
+	if (memcg) {
+		lruvec = mem_cgroup_lruvec(memcg, folio_pgdat(folio));
 
-		/* 
-		 * Decision logic based on refault patterns:
-		 * - High average distance with refaults = cold page, use slow swap
-		 * - Low average distance = hot page, prefer fast swap
-		 * - No refault history = unknown, be conservative
-		 */
-		dec_tree_result = 1; // Default: use fast swap
-		
-		if (refault_count > 0 && avg_distance > 20){
-			/* High average distance with refaults - cold page */
-			dec_tree_result = 0;
-			count_memcg_folio_events(folio, LEAF2, 1);
-		} else if (refault_count > 0 && avg_distance <= 7){
-			/* Low average distance - hot page, definitely use fast swap */
-			dec_tree_result = 1;
-			count_memcg_folio_events(folio, LEAF1, 1);
-		} else {
-			if (avg_distance <= 10){
-				/* Moderate average distance - consider fast swap space availability */
-				if (fast_left >= 32){
-					dec_tree_result = 1;
-					count_memcg_folio_events(folio, LEAF3, 1);
-				}
-				else{
-					dec_tree_result = 1;
-					count_memcg_folio_events(folio, LEAF4, 1);
-				}
-			}
-			else{
-				/* Higher average distance - be more selective about fast swap usage */
-				if (fast_left >= 64){
-					dec_tree_result = 1;
-				}
-				else{
-					count_memcg_folio_events(folio, LEAF5, 1);
-					dec_tree_result = 0;
+		/* Safely access shadow entry with race protection */
+		shadow_ext = folio->shadow_ext;  /* Read once */
+		if (shadow_ext && entry_is_entry_ext(shadow_ext) == 1) {
+			/* Verify shadow entry is still valid and attached to this folio */
+			if (folio->shadow_ext == shadow_ext) {  /* Double-check it hasn't changed */
+				unsigned int current_refault_count = shadow_ext->hist_ts[SE_HIST_REFAULT_COUNT];
+				unsigned int current_avg_distance = shadow_ext->hist_ts[SE_HIST_AVG_DISTANCE];
+				unsigned int still_hot = shadow_ext->hist_ts[SE_HIST_STILL_HOT];
+
+				router_result = swap_router_decide(current_refault_count, current_avg_distance,
+				                                   &lruvec->router_params);
+
+				/* Only update if shadow entry is still attached to folio */
+				if (folio->shadow_ext == shadow_ext) {
+					if (still_hot == 0 && router_result == 1) {
+						shadow_ext->hist_ts[SE_HIST_STILL_HOT] = 1;
+					} else if (still_hot == 1 && router_result == 0) {
+						shadow_ext->hist_ts[SE_HIST_STILL_HOT] = 0;
+						router_result = 1;
+					}
 				}
 			}
 		}
-		count_memcg_folio_events(folio, WI_TREE, 1);
-	}else{
-		if (fast_left > 8){
-			dec_tree_result = 1;
-		}
-		else{
-			dec_tree_result = 1;
-		}
-		count_memcg_folio_events(folio, WO_TREE, 1);
 	}
-#endif
-#ifdef CONFIG_LRU_DEC_TREE_FOR_SWAP
-	//translate from folio_prio to dec_tree_result, because its force
-	// if (folio_test_swappriohigh(folio))
-	// 	dec_tree_result = 1;
-	// else if (folio_test_swappriolow(folio))
-	// 	dec_tree_result = 0;
-	// //stale-saved page force goto slow
+
 	if (!clever_swap_alloc)
-		dec_tree_result = 1;
+		router_result = 1;
 	if (force_slow)
-		dec_tree_result = 0;
-	if (dec_tree_result == 0){
+		router_result = 0;
+
+	if (router_result == 0){
 #else
 	if (folio_test_swappriolow(folio)){
 #endif
@@ -567,10 +526,10 @@ repeat_slow:
 			}
 		}	
 	}
-#ifdef CONFIG_LRU_DEC_TREE_FOR_SWAP
-	else if (dec_tree_result == 1){
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+	else if (router_result == 1){
 #else
-	else if (folio_test_swappriohigh(folio)){//fast
+	else if (folio_test_swappriohigh(folio)){
 #endif
 		if (likely(check_cache_active() && cache->slots_fast)) {
 			mutex_lock(&cache->alloc_lock);

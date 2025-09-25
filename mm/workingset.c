@@ -356,6 +356,7 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 				entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = old_entry_ext->hist_ts[SE_HIST_AVG_DISTANCE];
 				entry_ext->hist_ts[SE_HIST_PAGE_ID] = old_entry_ext->hist_ts[SE_HIST_PAGE_ID]; /* Preserve page_id */
 				entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = min_seq % 0xFFFF; /* Update eviction time */
+				entry_ext->hist_ts[SE_HIST_STILL_HOT] = old_entry_ext->hist_ts[SE_HIST_STILL_HOT]; /* Copy still_hot flag */
 			}
 			else{
 				/* Different memcg - initialize with conservative defaults scaled by 1000x */
@@ -363,6 +364,7 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 				entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR;
 				entry_ext->hist_ts[SE_HIST_PAGE_ID] = old_entry_ext->hist_ts[SE_HIST_PAGE_ID]; /* Preserve page_id from old entry */
 				entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = min_seq % 0xFFFF; /* Update eviction time */
+				entry_ext->hist_ts[SE_HIST_STILL_HOT] = 0; /* Reset still_hot flag for different memcg */
 			}
 			trace_shadow_ext_transfer(folio, memcgid, entry_ext, old_entry_ext, entry.val);
 			if (swp_entry_test_ext(entry))
@@ -379,6 +381,7 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 			entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR;
 			/* Keep the page_id assigned during allocation - don't overwrite it */
 			entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = min_seq % 0xFFFF; /* Set eviction time */
+			entry_ext->hist_ts[SE_HIST_STILL_HOT] = 0; /* Initialize still_hot flag for first-time entry */
 		}
 #endif
 	}
