@@ -34,6 +34,7 @@
 #include <linux/vmalloc.h>
 #include <linux/mutex.h>
 #include <linux/mm.h>
+#include <linux/memcontrol.h>
 #include <trace/events/lru_gen.h>
 
 static DEFINE_PER_CPU(struct swap_slots_cache, swp_slots);
@@ -430,7 +431,6 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 	swp_entry_t* _slots;
 	int swap_router_result;
 	long fast_left;
-	unsigned short gen0, gen1;
 	struct shadow_entry* shadow_ext;
 	/*DJL ADD END*/
 	
@@ -462,68 +462,36 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 	WARN_ON_ONCE(folio_test_swappriolow(folio) && folio_test_swappriohigh(folio));
 	/*DJL ADD END*/
 #ifdef CONFIG_LRU_GEN_SWAP_ROUTER
-	struct dec_feature features;
 	fast_left = max(cache->fast_left, (long)0);
 	if (entry_is_entry_ext(folio->shadow_ext) == 1){
+		unsigned int refault_count, avg_distance;
+		struct mem_cgroup *memcg;
+
 		shadow_ext = (struct shadow_entry*)folio->shadow_ext;
-		unsigned int refault_count = shadow_ext->hist_ts[SE_HIST_REFAULT_COUNT];
-		unsigned int avg_distance = shadow_ext->hist_ts[SE_HIST_AVG_DISTANCE];
+		refault_count = shadow_ext->hist_ts[SE_HIST_REFAULT_COUNT];
+		avg_distance = shadow_ext->hist_ts[SE_HIST_AVG_DISTANCE];
 
 		/* Use average distance for decision making instead of generation values */
-		unsigned int avggen = avg_distance;
-		
+
 		if (refault_count > 0 && avg_distance < SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR)
 			count_memcg_folio_events(folio, LEAF7, 1);
 		else if (refault_count == 0)
 			count_memcg_folio_events(folio, LEAF6, 1);
 
-		/* 
-		 * Decision logic based on refault patterns:
-		 * - High average distance with refaults = cold page, use slow swap
-		 * - Low average distance = hot page, prefer fast swap
-		 * - No refault history = unknown, be conservative
-		 */
-		swap_router_result = 1; // Default: use fast swap
-		
-		if (refault_count > 0 && avg_distance > 20){
-			/* High average distance with refaults - cold page */
-			swap_router_result = 0;
-			count_memcg_folio_events(folio, LEAF2, 1);
-		} else if (refault_count > 0 && avg_distance <= 7){
-			/* Low average distance - hot page, definitely use fast swap */
-			swap_router_result = 1;
-			count_memcg_folio_events(folio, LEAF1, 1);
+		/* Use the new simple swap router decision function */
+		memcg = folio_memcg(folio);
+		if (memcg) {
+			struct mem_cgroup_per_node *pn = memcg->nodeinfo[folio_nid(folio)];
+			swap_router_result = swap_router_decision(refault_count, avg_distance,
+								 &pn->lruvec.router_params);
 		} else {
-			if (avg_distance <= 10){
-				/* Moderate average distance - consider fast swap space availability */
-				if (fast_left >= 32){
-					swap_router_result = 1;
-					count_memcg_folio_events(folio, LEAF3, 1);
-				}
-				else{
-					swap_router_result = 1;
-					count_memcg_folio_events(folio, LEAF4, 1);
-				}
-			}
-			else{
-				/* Higher average distance - be more selective about fast swap usage */
-				if (fast_left >= 64){
-					swap_router_result = 1;
-				}
-				else{
-					count_memcg_folio_events(folio, LEAF5, 1);
-					swap_router_result = 0;
-				}
-			}
+			/* No memcg context, use conservative default */
+			swap_router_result = (refault_count > 0) ? 1 : 0;
 		}
 		count_memcg_folio_events(folio, WI_TREE, 1);
 	}else{
-		if (fast_left > 8){
-			swap_router_result = 1;
-		}
-		else{
-			swap_router_result = 1;
-		}
+		/* No shadow extension, conservative default */
+		swap_router_result = 1;
 		count_memcg_folio_events(folio, WO_TREE, 1);
 	}
 #endif
