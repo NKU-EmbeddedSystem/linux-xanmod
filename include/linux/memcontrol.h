@@ -1913,7 +1913,7 @@ static inline void obj_cgroup_uncharge_zswap(struct obj_cgroup *objcg,
 }
 #endif
 
-#ifdef CONFIG_LRU_DEC_TREE_FOR_SWAP
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
 
 enum features_name {enum_pid = 0, space_left, swapprio_b, readahead_b, seq0, seq1, seq2, seq3, tier};
 

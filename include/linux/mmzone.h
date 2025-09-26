@@ -612,7 +612,7 @@ static inline void lru_gen_soft_reclaim(struct lruvec *lruvec)
 
 #endif /* CONFIG_LRU_GEN */
 
-#ifdef CONFIG_LRU_DEC_TREE_FOR_SWAP
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
 
 struct dec_node
 {
@@ -675,7 +675,7 @@ struct lruvec {
 #ifdef CONFIG_MEMCG
 	struct pglist_data *pgdat;
 #endif
-#ifdef CONFIG_LRU_DEC_TREE_FOR_SWAP
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
 	struct dec_tree* lru_dec_tree;
 	int (*predict)(struct dec_tree*, short*, struct folio*);
 #endif

@@ -5339,7 +5339,7 @@ struct mem_cgroup *mem_cgroup_get_from_ino(unsigned long ino)
 }
 #endif
 
-#ifdef CONFIG_LRU_DEC_TREE_FOR_SWAP
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
 struct dec_node* get_left(struct dec_node* parent){
     return (struct dec_node*)(parent->left);
 }
@@ -5715,7 +5715,7 @@ static int alloc_mem_cgroup_per_node_info(struct mem_cgroup *memcg, int node)
 
 	lruvec_init(&pn->lruvec);
 		// init tree
-#ifdef CONFIG_LRU_DEC_TREE_FOR_SWAP
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
 	// // lruvec->dec_tree = tree_init(lruvec->dec_tree);
     // lruvec->predict = &predict;
 	// // lruvec->predict = (int (*)(tree*, short*))(predict);
@@ -5739,8 +5739,8 @@ static void free_mem_cgroup_per_node_info(struct mem_cgroup *memcg, int node)
 		return;
 
 	free_percpu(pn->lruvec_stats_percpu);
-#ifdef CONFIG_LRU_DEC_TREE_FOR_SWAP
-	// TODO: del dec_tree
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+	// TODO: del swap router
 	if (pn->lruvec.lru_dec_tree)
 		destory_tree(pn->lruvec.lru_dec_tree);
 	printk(KERN_INFO "Tree destory ok in kernel 2024-3-4\n");

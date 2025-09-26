@@ -428,7 +428,7 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 	unsigned short prio;
 	int _nr, _cur, _prio;
 	swp_entry_t* _slots;
-	int dec_tree_result;
+	int swap_router_result;
 	long fast_left;
 	unsigned short gen0, gen1;
 	struct shadow_entry* shadow_ext;
@@ -461,7 +461,7 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 	//shouldn't up together
 	WARN_ON_ONCE(folio_test_swappriolow(folio) && folio_test_swappriohigh(folio));
 	/*DJL ADD END*/
-#ifdef CONFIG_LRU_DEC_TREE_FOR_SWAP
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
 	struct dec_feature features;
 	fast_left = max(cache->fast_left, (long)0);
 	if (entry_is_entry_ext(folio->shadow_ext) == 1){
@@ -483,62 +483,62 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 		 * - Low average distance = hot page, prefer fast swap
 		 * - No refault history = unknown, be conservative
 		 */
-		dec_tree_result = 1; // Default: use fast swap
+		swap_router_result = 1; // Default: use fast swap
 		
 		if (refault_count > 0 && avg_distance > 20){
 			/* High average distance with refaults - cold page */
-			dec_tree_result = 0;
+			swap_router_result = 0;
 			count_memcg_folio_events(folio, LEAF2, 1);
 		} else if (refault_count > 0 && avg_distance <= 7){
 			/* Low average distance - hot page, definitely use fast swap */
-			dec_tree_result = 1;
+			swap_router_result = 1;
 			count_memcg_folio_events(folio, LEAF1, 1);
 		} else {
 			if (avg_distance <= 10){
 				/* Moderate average distance - consider fast swap space availability */
 				if (fast_left >= 32){
-					dec_tree_result = 1;
+					swap_router_result = 1;
 					count_memcg_folio_events(folio, LEAF3, 1);
 				}
 				else{
-					dec_tree_result = 1;
+					swap_router_result = 1;
 					count_memcg_folio_events(folio, LEAF4, 1);
 				}
 			}
 			else{
 				/* Higher average distance - be more selective about fast swap usage */
 				if (fast_left >= 64){
-					dec_tree_result = 1;
+					swap_router_result = 1;
 				}
 				else{
 					count_memcg_folio_events(folio, LEAF5, 1);
-					dec_tree_result = 0;
+					swap_router_result = 0;
 				}
 			}
 		}
 		count_memcg_folio_events(folio, WI_TREE, 1);
 	}else{
 		if (fast_left > 8){
-			dec_tree_result = 1;
+			swap_router_result = 1;
 		}
 		else{
-			dec_tree_result = 1;
+			swap_router_result = 1;
 		}
 		count_memcg_folio_events(folio, WO_TREE, 1);
 	}
 #endif
-#ifdef CONFIG_LRU_DEC_TREE_FOR_SWAP
-	//translate from folio_prio to dec_tree_result, because its force
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+	//translate from folio_prio to swap_router_result, because its force
 	// if (folio_test_swappriohigh(folio))
-	// 	dec_tree_result = 1;
+	// 	swap_router_result = 1;
 	// else if (folio_test_swappriolow(folio))
-	// 	dec_tree_result = 0;
+	// 	swap_router_result = 0;
 	// //stale-saved page force goto slow
 	if (!clever_swap_alloc)
-		dec_tree_result = 1;
+		swap_router_result = 1;
 	if (force_slow)
-		dec_tree_result = 0;
-	if (dec_tree_result == 0){
+		swap_router_result = 0;
+	if (swap_router_result == 0){
 #else
 	if (folio_test_swappriolow(folio)){
 #endif
@@ -567,8 +567,8 @@ repeat_slow:
 			}
 		}	
 	}
-#ifdef CONFIG_LRU_DEC_TREE_FOR_SWAP
-	else if (dec_tree_result == 1){
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+	else if (swap_router_result == 1){
 #else
 	else if (folio_test_swappriohigh(folio)){//fast
 #endif

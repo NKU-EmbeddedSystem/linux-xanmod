@@ -1232,11 +1232,11 @@ config LRU_GEN_FALSE_FAST_ASSIGN_PUNISHMENT
 	  This option enables punishment on false fast assign, make the entry 
 	  spare, as well as letting the good ones stay. (same as to slow entry)
 
-config LRU_DEC_TREE_FOR_SWAP
-	bool "enables decision tree for folio swap."
+config LRU_GEN_SWAP_ROUTER
+	bool "enables swap router for folio swap."
 	depends on LRU_GEN
 	help
-	  This option enables decision tree for folio swap.
+	  This option enables swap routing for folio swap.
 	  
 config LRU_GEN_STATS
 	bool "Full stats for debugging"
