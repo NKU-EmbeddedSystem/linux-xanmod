@@ -354,14 +354,22 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 				/* Transfer historical data from previous shadow entry */
 				entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = old_entry_ext->hist_ts[SE_HIST_REFAULT_COUNT];
 				entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = old_entry_ext->hist_ts[SE_HIST_AVG_DISTANCE];
+#if SE_HIST_USE_PAGE_ID
 				entry_ext->hist_ts[SE_HIST_PAGE_ID] = old_entry_ext->hist_ts[SE_HIST_PAGE_ID]; /* Preserve page_id */
+#else
+				entry_ext->hist_ts[SE_HIST_STILL_HOT] = old_entry_ext->hist_ts[SE_HIST_STILL_HOT]; /* Preserve still_hot status */
+#endif
 				entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = min_seq % 0xFFFF; /* Update eviction time */
 			}
 			else{
 				/* Different memcg - initialize with conservative defaults scaled by 1000x */
 				entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = 0;
 				entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR;
+#if SE_HIST_USE_PAGE_ID
 				entry_ext->hist_ts[SE_HIST_PAGE_ID] = old_entry_ext->hist_ts[SE_HIST_PAGE_ID]; /* Preserve page_id from old entry */
+#else
+				entry_ext->hist_ts[SE_HIST_STILL_HOT] = 0; /* Initialize still_hot for different memcg */
+#endif
 				entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = min_seq % 0xFFFF; /* Update eviction time */
 			}
 			trace_shadow_ext_transfer(folio, memcgid, entry_ext, old_entry_ext, entry.val);

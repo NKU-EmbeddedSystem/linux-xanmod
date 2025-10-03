@@ -8,6 +8,7 @@
 #include <linux/tracepoint.h>
 #include <linux/mm.h>
 #include <linux/mm_inline.h>
+#include <linux/mm_types.h>
 #include <linux/ktime.h>
 #define	PAGEMAP_MAPPED		0x0001u
 #define PAGEMAP_ANONYMOUS	0x0002u
@@ -535,18 +536,26 @@ TRACE_EVENT(shadow_ext_transfer,
 		__entry->swap_entry	= swap_entry;
 	),
 
-	TP_printk("entry[%lx] folio@[%lx]{memcg:%d} se{%p}[cnt:%d,avg:%d,evict:%d]<=se{%p}[cnt:%d,avg:%d,evict:%d]", 
+	TP_printk("entry[%lx] folio@[%lx]{memcg:%d} se{%p}[cnt:%d,avg:%d," SE_HIST_FIELD2_NAME ":%d]<=se{%p}[cnt:%d,avg:%d," SE_HIST_FIELD2_NAME ":%d]", 
 				__entry->swap_entry,
 				(((unsigned long)(__entry->folio)) & (0xffffffffffff)), 
 				(unsigned short)__entry->cgroup_id,
 				__entry->se_new,
 				// __entry->se_new->memcg_id, 
-				__entry->se_new->hist_ts[SE_HIST_REFAULT_COUNT], 
+				__entry->se_new->hist_ts[SE_HIST_REFAULT_COUNT],
+#if SE_HIST_USE_PAGE_ID
 				__entry->se_new->hist_ts[SE_HIST_AVG_DISTANCE], __entry->se_new->hist_ts[SE_HIST_PAGE_ID],
+#else
+				__entry->se_new->hist_ts[SE_HIST_AVG_DISTANCE], __entry->se_new->hist_ts[SE_HIST_STILL_HOT],
+#endif
 				__entry->se_old,
 				// __entry->se_old->memcg_id,
 				__entry->se_old->hist_ts[SE_HIST_REFAULT_COUNT],
+#if SE_HIST_USE_PAGE_ID
 				__entry->se_old->hist_ts[SE_HIST_AVG_DISTANCE], __entry->se_old->hist_ts[SE_HIST_PAGE_ID]
+#else
+				__entry->se_old->hist_ts[SE_HIST_AVG_DISTANCE], __entry->se_old->hist_ts[SE_HIST_STILL_HOT]
+#endif
 			 )
 );
 
@@ -595,7 +604,7 @@ TRACE_EVENT(folio_ws_chg_se,
 
 	TP_printk("[%s%s]left[%ld] entry[%lx] va[%lx]->folio@[%lx]{[%s]ra[%d]gen[%d]}\
 {memcg:%d}min_seq[%lu];ref[%d];tier[%d] \
-se{%p}[cnt:%d,avg:%d,page_id:%d]",
+se{%p}[cnt:%d,avg:%d," SE_HIST_FIELD2_NAME ":%d]",
                 __entry->in ? "RE<=" : "EV=>",
 				__entry->swap_level == 1 ? "f" : (
 				__entry->swap_level == 0 ? "m" : (
@@ -615,9 +624,12 @@ se{%p}[cnt:%d,avg:%d,page_id:%d]",
 				__entry->se,
 				__entry->se->hist_ts[SE_HIST_REFAULT_COUNT],
 				__entry->se->hist_ts[SE_HIST_AVG_DISTANCE],
+#if SE_HIST_USE_PAGE_ID
 				__entry->se->hist_ts[SE_HIST_PAGE_ID])
-);
+#else
+				__entry->se->hist_ts[SE_HIST_STILL_HOT])
 #endif
+);
 TRACE_EVENT(folio_ws_chg,
 
 	TP_PROTO(struct folio* folio, 
@@ -788,9 +800,11 @@ TRACE_EVENT(damon_va_check_access,
 		__entry->end	= end;
 	),
 
-	TP_printk("region@[%p][%lu-%lu] len[%lu] accessed sample addr[%lu]", 
+	TP_printk("region@[%p][%lu-%lu] len[%lu] accessed sample addr[%lu]",
                 __entry->r, __entry->start / PAGE_SIZE, __entry->end / PAGE_SIZE, (__entry->end - __entry->start) / PAGE_SIZE,  __entry->sampling_addr)
 );
+
+#endif /* CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY */
 
 #endif /* _TRACE_LRU_GEN_H */
 #include <trace/define_trace.h>

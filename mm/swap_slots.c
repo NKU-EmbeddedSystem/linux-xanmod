@@ -466,19 +466,18 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 	if (entry_is_entry_ext(folio->shadow_ext) == 1){
 		unsigned int refault_count, avg_distance;
 		struct mem_cgroup *memcg;
+#if !SE_HIST_USE_PAGE_ID
+		unsigned int still_hot;
+#endif
 
 		shadow_ext = (struct shadow_entry*)folio->shadow_ext;
 		refault_count = shadow_ext->hist_ts[SE_HIST_REFAULT_COUNT];
 		avg_distance = shadow_ext->hist_ts[SE_HIST_AVG_DISTANCE];
+#if !SE_HIST_USE_PAGE_ID
+		still_hot = shadow_ext->hist_ts[SE_HIST_STILL_HOT];
+#endif
 
 		/* Use average distance for decision making instead of generation values */
-
-		if (refault_count > 0 && avg_distance < SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR)
-			count_memcg_folio_events(folio, LEAF7, 1);
-		else if (refault_count == 0)
-			count_memcg_folio_events(folio, LEAF6, 1);
-
-		/* Use the new simple swap router decision function */
 		memcg = folio_memcg(folio);
 		if (memcg) {
 			struct mem_cgroup_per_node *pn = memcg->nodeinfo[folio_nid(folio)];
@@ -488,20 +487,43 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 			/* No memcg context, use conservative default */
 			swap_router_result = (refault_count > 0) ? 1 : 0;
 		}
+
+#if !SE_HIST_USE_PAGE_ID
+		/* Apply STILL_HOT hysteresis logic and count events */
+		if (still_hot == 0 && swap_router_result == 1) {
+			/* Cold->Hot transition: set still_hot=1, keep decision=1 */
+			shadow_ext->hist_ts[SE_HIST_STILL_HOT] = 1;
+			count_memcg_folio_events(folio, PREDICT_FAST, 1);
+		} else if (still_hot == 1 && swap_router_result == 0) {
+			/* Hot->Cold transition: set still_hot=0, override decision to 1 */
+			shadow_ext->hist_ts[SE_HIST_STILL_HOT] = 0;
+			swap_router_result = 1;  /* Override to 1 for hysteresis */
+			count_memcg_folio_events(folio, PREDICT_SLOW_BUT_HYSTERESIS, 1);
+		} else if (swap_router_result == 1) {
+			/* Consistent hot decision */
+			count_memcg_folio_events(folio, PREDICT_FAST, 1);
+		} else {
+			/* Consistent slow decision */
+			count_memcg_folio_events(folio, PREDICT_SLOW, 1);
+		}
+#else
+		/* Count events for PAGE_ID mode (no hysteresis) */
+		if (swap_router_result == 1) {
+			count_memcg_folio_events(folio, PREDICT_FAST, 1);
+		} else {
+			count_memcg_folio_events(folio, PREDICT_SLOW, 1);
+		}
+#endif
+
 		count_memcg_folio_events(folio, WI_TREE, 1);
 	}else{
 		/* No shadow extension, conservative default */
-		swap_router_result = 1;
+		// we believe just a few pages is hot, so we don't assign it to fast
+		swap_router_result = 0;
 		count_memcg_folio_events(folio, WO_TREE, 1);
 	}
 #endif
 #ifdef CONFIG_LRU_GEN_SWAP_ROUTER
-	//translate from folio_prio to swap_router_result, because its force
-	// if (folio_test_swappriohigh(folio))
-	// 	swap_router_result = 1;
-	// else if (folio_test_swappriolow(folio))
-	// 	swap_router_result = 0;
-	// //stale-saved page force goto slow
 	if (!clever_swap_alloc)
 		swap_router_result = 1;
 	if (force_slow)

@@ -1446,6 +1446,7 @@ const char * const vmstat_text[] = {
 	"leaf7",
 	"predict_fast",
 	"predict_slow",
+	"predict_slow_but_hysteresis",
 	"wi_tree",
 	"wo_tree",
 	"his_num_1",

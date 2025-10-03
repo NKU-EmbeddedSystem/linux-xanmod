@@ -400,7 +400,11 @@ static inline struct shadow_entry* shadow_entry_alloc(void){
 		/* Initialize with conservative defaults scaled by 1000x */
 		entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = 0;
 		entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR;
+#if SE_HIST_USE_PAGE_ID
 		entry_ext->hist_ts[SE_HIST_PAGE_ID] = get_unique_page_id();
+#else
+		entry_ext->hist_ts[SE_HIST_STILL_HOT] = 0;  /* Initialize still_hot status */
+#endif
 		entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = 0;
 		// entry_ext->flag = 0;
 #endif
