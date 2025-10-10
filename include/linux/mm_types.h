@@ -1038,7 +1038,7 @@ typedef struct {
 #define SE_HIST_EVICTION_TIME	3	/* Eviction-time min_seq for refault distance calculation */
 
 /* Configuration: Choose between PAGE_ID functionality or STILL_HOT analysis */
-#define SE_HIST_USE_PAGE_ID	1	/* 1 = use PAGE_ID, 0 = reuse field for STILL_HOT */
+#define SE_HIST_USE_PAGE_ID	0	/* 1 = use PAGE_ID, 0 = reuse field for STILL_HOT */
 
 #if SE_HIST_USE_PAGE_ID
 /* Original PAGE_ID functionality - field 2 stores unique page identifier */
@@ -1048,7 +1048,7 @@ typedef struct {
 #define SE_HIST_STILL_HOT	2	/* Hot/cold status indicator for analysis (reuses PAGE_ID field) */
 #define SE_HIST_FIELD2_NAME	"still_hot"
 #endif
-#define SE_HIST_INITIAL_AVG_DIST	65	/* Initial conservative assumption for average distance */
+#define SE_HIST_INITIAL_AVG_DIST	65535	/* Initial conservative assumption for average distance */
 #define SE_HIST_SCALE_FACTOR	1000	/* Scale factor for precision in average distance calculation */
 #define SHADOW_EXT_FLAG_STALE_SAVED 0x1
 typedef struct shadow_entry{
