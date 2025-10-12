@@ -1269,12 +1269,32 @@ swp_entry_t delete_from_swap_cache(struct folio *folio)
 	swp_entry_t entry = folio_swap_entry(folio);
 	struct swap_info_struct *si;
 	struct address_space *address_space = swap_address_space(entry);
+	void *shadow = NULL;
+
+	// pr_err("DELETE_FROM_SWAP_CACHE: entry[%lx] folio[%p] shadow_ext[%p] mapped[%d]",
+	// 	   entry.val, folio, folio->shadow_ext, folio_mapped(folio));
+
 	if (folio_test_swappriohigh(folio) || folio_test_swappriolow(folio)){
 		pr_err("delete_s$ folio[%p]->ext[%p] pri[%lx], WARN", folio, folio->shadow_ext, entry.val);
 		// BUG();
 	}
+
+#ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
+	/* Transfer shadow_ext to xarray for future swap-ins to inherit */
+	/* The folio will keep its own shadow_ext copy for re-eviction tracking */
+	if (folio->shadow_ext && entry_is_entry_ext(folio->shadow_ext) == 1) {
+		shadow = folio_remove_shadow_entry(folio);
+		pr_info("delete_from_swap_cache: transferring shadow_ext[%p] to xarray for entry[%lx]",
+				shadow, entry.val);
+	} else {
+		pr_info("delete_from_swap_cache: NO shadow_ext for entry[%lx], folio->shadow_ext=%p",
+				entry.val, folio->shadow_ext);
+	}
+	/* Shadow_ext needs to be in BOTH xarray and folio for proper inheritance */
+#endif
+
 	xa_lock_irq(&address_space->i_pages);
-	__delete_from_swap_cache(folio, entry, NULL);
+	__delete_from_swap_cache(folio, entry, shadow);
 	xa_unlock_irq(&address_space->i_pages);
 
 	si = get_swap_device(entry);
@@ -1303,14 +1323,35 @@ swp_entry_t delete_from_swap_cache_debug(struct folio *folio, swp_entry_t expect
 {
 	swp_entry_t entry = folio_swap_entry(folio);
 	struct swap_info_struct *si;
-	VM_BUG_ON(entry.val != expected_entry.val);
 	struct address_space *address_space = swap_address_space(entry);
+	void *shadow = NULL;
+
+	VM_BUG_ON(entry.val != expected_entry.val);
+
+	// pr_err("DELETE_FROM_SWAP_CACHE_DEBUG: entry[%lx] folio[%p] shadow_ext[%p] mapped[%d]",
+	// 	   entry.val, folio, folio->shadow_ext, folio_mapped(folio));
+
 	if (folio_test_swappriohigh(folio) || folio_test_swappriolow(folio)){
 		pr_err("delete_s$_debug folio[%p]->ext[%p] pri[%lx], WARN", folio, folio->shadow_ext, entry.val);
 		// BUG();
 	}
+
+#ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
+	/* Transfer shadow_ext to xarray for future swap-ins to inherit */
+	/* The folio will keep its own shadow_ext copy for re-eviction tracking */
+	if (folio->shadow_ext && entry_is_entry_ext(folio->shadow_ext) == 1) {
+		shadow = folio_remove_shadow_entry(folio);
+		pr_info("delete_from_swap_cache_debug: transferring shadow_ext[%p] to xarray for entry[%lx]",
+				shadow, entry.val);
+	} else {
+		pr_info("delete_from_swap_cache_debug: NO shadow_ext for entry[%lx], folio->shadow_ext=%p",
+				entry.val, folio->shadow_ext);
+	}
+	/* Shadow_ext needs to be in BOTH xarray and folio for proper inheritance */
+#endif
+
 	xa_lock_irq(&address_space->i_pages);
-	__delete_from_swap_cache(folio, entry, NULL);
+	__delete_from_swap_cache(folio, entry, shadow);
 	xa_unlock_irq(&address_space->i_pages);
 
 	si = get_swap_device(entry);
