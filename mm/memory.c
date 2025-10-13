@@ -3928,6 +3928,70 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		if (!(si->flags & SWP_SYNCHRONOUS_IO)){
 			count_memcg_event_mm(vma->vm_mm, SWAPIN_FROM_SWAPCACHE_SLOW);
 		}
+#ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
+		/* RACE DETECTION & FIX: Refaulting from swap cache during eviction
+		 * - Eviction started: add_to_swap() added folio to swap cache
+		 * - Refault happened before eviction completed (__delete_from_swap_cache)
+		 *
+		 * If folio has no shadow_ext: refault happened BEFORE workingset_eviction()
+		 *   → This causes wo_tree inflation (next eviction counts as first eviction)
+		 *   → FIX: Create shadow_ext with hot signal to prevent wo_tree inflation
+		 *
+		 * If folio has shadow_ext: refault happened AFTER workingset_eviction()
+		 *   → Shadow_ext already created, will be preserved correctly
+		 *   → This is less problematic but still indicates interrupted eviction
+		 */
+		if (!folio->shadow_ext) {
+			count_memcg_event_mm(vma->vm_mm, RACE_EARLY_REFAULT);
+
+#ifdef CONFIG_LRU_GEN_SHADOW_ENTRY_EXT
+			/* Allocate shadow_ext to record this refault event
+			 * Pages refaulted immediately after eviction are VERY HOT
+			 */
+			struct shadow_entry* hot_shadow = shadow_entry_alloc();
+			if (hot_shadow) {
+				struct mem_cgroup *memcg;
+				struct pglist_data *pgdat;
+				int memcgid;
+				unsigned long eviction_value;
+
+				/* Get memcg and pgdat for this folio */
+				memcg = folio_memcg(folio);
+				pgdat = folio_pgdat(folio);
+				memcgid = mem_cgroup_id(memcg);
+
+				/* Pack shadow value (memcgid, node_id, eviction=0, workingset=false)
+				 * eviction=0 since this is immediate refault */
+				eviction_value = 0;  /* eviction token = 0 for immediate refault */
+				eviction_value = (eviction_value << 16) | memcgid;  /* MEM_CGROUP_ID_SHIFT */
+				eviction_value = (eviction_value << 10) | pgdat->node_id;  /* NODES_SHIFT */
+				eviction_value = (eviction_value << 1) | 0;  /* WORKINGSET_SHIFT, not workingset */
+
+				/* Set shadow field to valid xa_value */
+				hot_shadow->shadow = xa_mk_value(eviction_value);
+
+				/* Set magic number for validation */
+				hot_shadow->magic = 0x4321 ^ (unsigned short)((unsigned long)hot_shadow & 0xFFFF);
+
+				/* Set hot signal values:
+				 * - refault_count=1: first refault (this event)
+				 * - avg_distance=0: immediate refault indicates very hot page
+				 * - still_hot=1: mark as hot (when not using PAGE_ID)
+				 * - page_id: already set by shadow_entry_alloc() if SE_HIST_USE_PAGE_ID=1
+				 * - eviction_time: set to 0 (unknown eviction time for this race case)
+				 */
+				hot_shadow->hist_ts[SE_HIST_REFAULT_COUNT] = 1;
+				hot_shadow->hist_ts[SE_HIST_AVG_DISTANCE] = 0;
+#if !SE_HIST_USE_PAGE_ID
+				hot_shadow->hist_ts[SE_HIST_STILL_HOT] = 1;
+#endif
+				hot_shadow->hist_ts[SE_HIST_EVICTION_TIME] = 0;  /* Unknown eviction time */
+				/* Attach to folio - next eviction will see this as re-eviction (wi_tree) */
+				folio_add_shadow_entry(folio, hot_shadow);
+			}
+#endif /* CONFIG_LRU_GEN_SHADOW_ENTRY_EXT */
+		}
+#endif
 		swp_entry_t pri_entry;
 		pri_entry.val = page_private(page);
 		swp_entry_clear_ext(&pri_entry, 0x3);

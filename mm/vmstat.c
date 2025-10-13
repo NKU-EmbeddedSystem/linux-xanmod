@@ -1449,6 +1449,7 @@ const char * const vmstat_text[] = {
 	"predict_slow_but_hysteresis",
 	"wi_tree",
 	"wo_tree",
+	"race_early_refault",
 	"his_num_1",
 	"his_num_2",
 	"his_num_3",

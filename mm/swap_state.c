@@ -1098,15 +1098,15 @@ bool add_to_swap(struct folio *folio, long* left_space)
 			__GFP_HIGH|__GFP_NOMEMALLOC|__GFP_NOWARN, &shadow_test);
 	if (err){
 		if (shadow_test){
-			pr_err("add to swap should fail get shadow folio[%p] entry[%lx]cnt[%d] shadow[%p]", 
+			pr_err("add to swap should fail get shadow folio[%p] entry[%lx]cnt[%d] shadow[%p]",
 					folio, entry.val, __swap_count(entry), shadow_test);
 			shadow_entry_free(shadow_test);
-		}		
+		}
 		/*
 		 * add_to_swap_cache() doesn't return -EEXIST, so we can safely
 		 * clear SWAP_HAS_CACHE flag.
 		 */
-		goto fail;		
+		goto fail;
 	}
 
 
@@ -1280,17 +1280,16 @@ swp_entry_t delete_from_swap_cache(struct folio *folio)
 	}
 
 #ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
-	/* Transfer shadow_ext to xarray for future swap-ins to inherit */
-	/* The folio will keep its own shadow_ext copy for re-eviction tracking */
-	if (folio->shadow_ext && entry_is_entry_ext(folio->shadow_ext) == 1) {
-		shadow = folio_remove_shadow_entry(folio);
-		pr_info("delete_from_swap_cache: transferring shadow_ext[%p] to xarray for entry[%lx]",
-				shadow, entry.val);
-	} else {
-		pr_info("delete_from_swap_cache: NO shadow_ext for entry[%lx], folio->shadow_ext=%p",
-				entry.val, folio->shadow_ext);
-	}
-	/* Shadow_ext needs to be in BOTH xarray and folio for proper inheritance */
+	/* Keep shadow_ext on folio for next eviction, clear xarray slot */
+	/* Swap entry is being freed, page stays in memory with its shadow_ext */
+	// if (folio->shadow_ext && entry_is_entry_ext(folio->shadow_ext) == 1) {
+	// 	pr_info("delete_from_swap_cache: keeping shadow_ext[%p] on folio[%p] for entry[%lx]",
+	// 			folio->shadow_ext, folio, entry.val);
+	// } else {
+	// 	pr_info("delete_from_swap_cache: NO shadow_ext for entry[%lx], folio->shadow_ext=%p",
+	// 			entry.val, folio->shadow_ext);
+	// }
+	/* shadow stays NULL - xarray slot cleared, folio keeps shadow_ext for re-eviction */
 #endif
 
 	xa_lock_irq(&address_space->i_pages);
@@ -1337,17 +1336,16 @@ swp_entry_t delete_from_swap_cache_debug(struct folio *folio, swp_entry_t expect
 	}
 
 #ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
-	/* Transfer shadow_ext to xarray for future swap-ins to inherit */
-	/* The folio will keep its own shadow_ext copy for re-eviction tracking */
-	if (folio->shadow_ext && entry_is_entry_ext(folio->shadow_ext) == 1) {
-		shadow = folio_remove_shadow_entry(folio);
-		pr_info("delete_from_swap_cache_debug: transferring shadow_ext[%p] to xarray for entry[%lx]",
-				shadow, entry.val);
-	} else {
-		pr_info("delete_from_swap_cache_debug: NO shadow_ext for entry[%lx], folio->shadow_ext=%p",
-				entry.val, folio->shadow_ext);
-	}
-	/* Shadow_ext needs to be in BOTH xarray and folio for proper inheritance */
+	/* Keep shadow_ext on folio for next eviction, clear xarray slot */
+	/* Swap entry is being freed, page stays in memory with its shadow_ext */
+	// if (folio->shadow_ext && entry_is_entry_ext(folio->shadow_ext) == 1) {
+	// 	pr_info("delete_from_swap_cache_debug: keeping shadow_ext[%p] on folio[%p] for entry[%lx]",
+	// 			folio->shadow_ext, folio, entry.val);
+	// } else {
+	// 	pr_info("delete_from_swap_cache_debug: NO shadow_ext for entry[%lx], folio->shadow_ext=%p",
+	// 			entry.val, folio->shadow_ext);
+	// }
+	/* shadow stays NULL - xarray slot cleared, folio keeps shadow_ext for re-eviction */
 #endif
 
 	xa_lock_irq(&address_space->i_pages);

@@ -738,6 +738,7 @@ static const unsigned int memcg_vm_event_stat[] = {
 	PREDICT_SLOW_BUT_HYSTERESIS,
 	WI_TREE,
 	WO_TREE,
+	RACE_EARLY_REFAULT,
 	HIS_NUM_1,
 	HIS_NUM_2,
 	HIS_NUM_3,
