@@ -3934,15 +3934,15 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		 * - Refault happened before eviction completed (__delete_from_swap_cache)
 		 *
 		 * If folio has no shadow_ext: refault happened BEFORE workingset_eviction()
-		 *   → This causes wo_tree inflation (next eviction counts as first eviction)
-		 *   → FIX: Create shadow_ext with hot signal to prevent wo_tree inflation
+		 *   → This causes wo_router inflation (next eviction counts as first eviction)
+		 *   → FIX: Create shadow_ext with hot signal to prevent wo_router inflation
 		 *
 		 * If folio has shadow_ext: refault happened AFTER workingset_eviction()
 		 *   → Shadow_ext already created, will be preserved correctly
 		 *   → This is less problematic but still indicates interrupted eviction
 		 */
 		if (!folio->shadow_ext) {
-			count_memcg_event_mm(vma->vm_mm, RACE_EARLY_REFAULT);
+			count_memcg_event_mm(vma->vm_mm, RACE_EARLY_REFAULT_FIRST_EVICT);
 
 #ifdef CONFIG_LRU_GEN_SHADOW_ENTRY_EXT
 			/* Allocate shadow_ext to record this refault event
@@ -3976,20 +3976,59 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 				/* Set hot signal values:
 				 * - refault_count=1: first refault (this event)
 				 * - avg_distance=0: immediate refault indicates very hot page
-				 * - still_hot=1: mark as hot (when not using PAGE_ID)
+				 * - eviction_race_state=NORMAL: mark as handled (when not using PAGE_ID)
 				 * - page_id: already set by shadow_entry_alloc() if SE_HIST_USE_PAGE_ID=1
 				 * - eviction_time: set to 0 (unknown eviction time for this race case)
 				 */
 				hot_shadow->hist_ts[SE_HIST_REFAULT_COUNT] = 1;
 				hot_shadow->hist_ts[SE_HIST_AVG_DISTANCE] = 0;
 #if !SE_HIST_USE_PAGE_ID
-				hot_shadow->hist_ts[SE_HIST_STILL_HOT] = 1;
+				hot_shadow->hist_ts[SE_HIST_EVICTION_RACE_STATE] = SE_RACE_STATE_NORMAL;
 #endif
 				hot_shadow->hist_ts[SE_HIST_EVICTION_TIME] = 0;  /* Unknown eviction time */
-				/* Attach to folio - next eviction will see this as re-eviction (wi_tree) */
+				/* Attach to folio - next eviction will see this as re-eviction (wi_router) */
 				folio_add_shadow_entry(folio, hot_shadow);
 			}
 #endif /* CONFIG_LRU_GEN_SHADOW_ENTRY_EXT */
+		}
+		else if (folio->shadow_ext && entry_is_entry_ext(folio->shadow_ext) == 1) {
+			/* Folio has existing shadow_ext - check if in eviction race window */
+			struct shadow_entry* shadow_ext = folio->shadow_ext;
+
+#if !SE_HIST_USE_PAGE_ID
+			/* RACE DETECTION: Check if shadow_ext is in eviction race state
+			 * Race window: between add_to_swap() and workingset_eviction() completion
+			 * If flag=SE_RACE_STATE_EVICTING, refault occurred before shadow_ext update
+			 */
+			if (shadow_ext->hist_ts[SE_HIST_EVICTION_RACE_STATE] == SE_RACE_STATE_EVICTING) {
+				unsigned long refault_count = shadow_ext->hist_ts[SE_HIST_REFAULT_COUNT];
+				unsigned long old_avg_distance = shadow_ext->hist_ts[SE_HIST_AVG_DISTANCE];
+				unsigned long new_avg_distance;
+
+				count_memcg_event_mm(vma->vm_mm, RACE_EARLY_REFAULT_RE_EVICT);
+
+				/* Update shadow_ext with this immediate refault event:
+				 * - Increment refault_count by 1
+				 * - Update avg_distance with distance=0 (immediate refault = very hot)
+				 * - Clear race state flag (mark as handled)
+				 *
+				 * Average distance formula (scaled by SE_HIST_SCALE_FACTOR=1000):
+				 * new_avg = (old_avg * refault_count + new_distance * 1000) / (refault_count + 1)
+				 * Since new_distance=0: new_avg = (old_avg * refault_count) / (refault_count + 1)
+				 */
+				if (refault_count > 0) {
+					new_avg_distance = (old_avg_distance * refault_count) / (refault_count + 1);
+				} else {
+					/* First refault - set avg_distance to 0 (scaled) */
+					new_avg_distance = 0;
+				}
+
+				/* Apply updates atomically */
+				shadow_ext->hist_ts[SE_HIST_REFAULT_COUNT] = refault_count + 1;
+				shadow_ext->hist_ts[SE_HIST_AVG_DISTANCE] = new_avg_distance;
+				shadow_ext->hist_ts[SE_HIST_EVICTION_RACE_STATE] = SE_RACE_STATE_NORMAL;
+			}
+#endif /* !SE_HIST_USE_PAGE_ID */
 		}
 #endif
 		swp_entry_t pri_entry;

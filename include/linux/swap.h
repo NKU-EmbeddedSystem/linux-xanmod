@@ -403,7 +403,7 @@ static inline struct shadow_entry* shadow_entry_alloc(void){
 #if SE_HIST_USE_PAGE_ID
 		entry_ext->hist_ts[SE_HIST_PAGE_ID] = get_unique_page_id();
 #else
-		entry_ext->hist_ts[SE_HIST_STILL_HOT] = 0;  /* Initialize still_hot status */
+		entry_ext->hist_ts[SE_HIST_EVICTION_RACE_STATE] = SE_RACE_STATE_NORMAL;  /* Initialize to normal (not in race window) */
 #endif
 		entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = 0;
 		// entry_ext->flag = 0;

@@ -357,7 +357,8 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 #if SE_HIST_USE_PAGE_ID
 				entry_ext->hist_ts[SE_HIST_PAGE_ID] = old_entry_ext->hist_ts[SE_HIST_PAGE_ID]; /* Preserve page_id */
 #else
-				entry_ext->hist_ts[SE_HIST_STILL_HOT] = old_entry_ext->hist_ts[SE_HIST_STILL_HOT]; /* Preserve still_hot status */
+				/* Clear eviction race state - shadow_ext update completed successfully */
+				entry_ext->hist_ts[SE_HIST_EVICTION_RACE_STATE] = SE_RACE_STATE_NORMAL;
 #endif
 				entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = min_seq % 0xFFFF; /* Update eviction time */
 			}
@@ -368,7 +369,7 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 #if SE_HIST_USE_PAGE_ID
 				entry_ext->hist_ts[SE_HIST_PAGE_ID] = old_entry_ext->hist_ts[SE_HIST_PAGE_ID]; /* Preserve page_id from old entry */
 #else
-				entry_ext->hist_ts[SE_HIST_STILL_HOT] = 0; /* Initialize still_hot for different memcg */
+				entry_ext->hist_ts[SE_HIST_EVICTION_RACE_STATE] = SE_RACE_STATE_NORMAL; /* Clear race state */
 #endif
 				entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = min_seq % 0xFFFF; /* Update eviction time */
 			}
@@ -385,6 +386,10 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 			/* No previous shadow entry - initialize with conservative defaults scaled by 1000x */
 			entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = 0;
 			entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR;
+#if !SE_HIST_USE_PAGE_ID
+			/* Clear eviction race state - first normal eviction completing */
+			entry_ext->hist_ts[SE_HIST_EVICTION_RACE_STATE] = SE_RACE_STATE_NORMAL;
+#endif
 			/* Keep the page_id assigned during allocation - don't overwrite it */
 			entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = min_seq % 0xFFFF; /* Set eviction time */
 		}

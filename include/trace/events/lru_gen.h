@@ -546,7 +546,7 @@ TRACE_EVENT(shadow_ext_transfer,
 #if SE_HIST_USE_PAGE_ID
 				__entry->se_new->hist_ts[SE_HIST_AVG_DISTANCE], __entry->se_new->hist_ts[SE_HIST_PAGE_ID],
 #else
-				__entry->se_new->hist_ts[SE_HIST_AVG_DISTANCE], __entry->se_new->hist_ts[SE_HIST_STILL_HOT],
+				__entry->se_new->hist_ts[SE_HIST_AVG_DISTANCE], __entry->se_new->hist_ts[SE_HIST_EVICTION_RACE_STATE],
 #endif
 				__entry->se_old,
 				// __entry->se_old->memcg_id,
@@ -554,7 +554,7 @@ TRACE_EVENT(shadow_ext_transfer,
 #if SE_HIST_USE_PAGE_ID
 				__entry->se_old->hist_ts[SE_HIST_AVG_DISTANCE], __entry->se_old->hist_ts[SE_HIST_PAGE_ID]
 #else
-				__entry->se_old->hist_ts[SE_HIST_AVG_DISTANCE], __entry->se_old->hist_ts[SE_HIST_STILL_HOT]
+				__entry->se_old->hist_ts[SE_HIST_AVG_DISTANCE], __entry->se_old->hist_ts[SE_HIST_EVICTION_RACE_STATE]
 #endif
 			 )
 );
@@ -627,7 +627,7 @@ se{%p}[cnt:%d,avg:%d," SE_HIST_FIELD2_NAME ":%d]",
 #if SE_HIST_USE_PAGE_ID
 				__entry->se->hist_ts[SE_HIST_PAGE_ID])
 #else
-				__entry->se->hist_ts[SE_HIST_STILL_HOT])
+				__entry->se->hist_ts[SE_HIST_EVICTION_RACE_STATE])
 #endif
 );
 TRACE_EVENT(folio_ws_chg,

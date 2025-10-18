@@ -271,6 +271,18 @@ int add_to_swap_cache(struct folio *folio, swp_entry_t entry,
 		address_space->nrpages += nr;
 		__node_stat_mod_folio(folio, NR_FILE_PAGES, nr);
 		__lruvec_stat_mod_folio(folio, NR_SWAPCACHE, nr);
+
+#ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
+		/* Mark shadow_ext as entering eviction race window if it exists
+		 * Race window: folio now in swap cache, but shadow_ext update still pending
+		 * If refault happens before workingset_eviction() completes, we'll detect it */
+		if (folio->shadow_ext && entry_is_entry_ext(folio->shadow_ext) == 1) {
+			struct shadow_entry* shadow_ext = folio->shadow_ext;
+#if !SE_HIST_USE_PAGE_ID
+			shadow_ext->hist_ts[SE_HIST_EVICTION_RACE_STATE] = SE_RACE_STATE_EVICTING;
+#endif
+		}
+#endif
 unlock:
 		xas_unlock_irq(&xas);
 	} while (xas_nomem(&xas, gfp));
