@@ -2565,7 +2565,7 @@ static unsigned int find_next_to_unuse(struct swap_info_struct *si,
 		}
 		if ((i % LATENCY_LIMIT) == 0)
 			cond_resched();
-		if ((i % si->max) == 0 && i > 0)
+		if (!found && (i % si->max) == 0 && i > 0)
 			i = 0;
 	}
 	else{
