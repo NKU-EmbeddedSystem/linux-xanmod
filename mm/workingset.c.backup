@@ -378,13 +378,13 @@ static void *pack_shadow_ext(int memcgid, pg_data_t *pgdat, unsigned long evicti
 		}
 		else{
 			/* No previous shadow entry - initialize with conservative defaults scaled by 1000x */
-			/* Assign page_id FIRST - primary identifier for this virtual page */
-			struct mem_cgroup *memcg = folio_memcg(folio);
-			entry_ext->hist_ts[SE_HIST_PAGE_ID] = get_unique_page_id(memcg);
 			entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = 0;
 			entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR;
+			/* Clear eviction race state - first normal eviction completing */
 			entry_ext->race_state = SE_RACE_STATE_NORMAL;
-			entry_ext->eviction_time = min_seq % 0xFFFF;
+			/* Assign new page_id for first eviction only (prevents counter exhaustion) */
+			entry_ext->hist_ts[SE_HIST_PAGE_ID] = get_unique_page_id();
+			entry_ext->eviction_time = min_seq % 0xFFFF; /* Set eviction time */
 		}
 #endif
 	}
@@ -633,7 +633,6 @@ static void lru_gen_refault(struct folio *folio, void *shadow, int* try_free_ent
 		/* Update shadow entry with new statistics */
 		entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = refault_count + 1;
 		entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = new_avg_distance;
-		// entry_ext->eviction_time = min_seq % 0xFFFF;
 		/* Note: SE_HIST_PAGE_ID remains constant throughout page lifetime */
 		
 		/* Use scaled value directly for better precision in decisions */
@@ -736,11 +735,9 @@ skip_count:
 	/*DJL ADD END*/
 	/*DJL ADD BEGIN*/
 #ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
-	if (shadow && (entry_is_entry_ext(shadow) == 1)) {
-		/* Use current min_seq for trace instead of eviction-time min_seq */
-		unsigned long refault_token = (min_seq << LRU_REFS_WIDTH) | (token & ((1UL << LRU_REFS_WIDTH) - 1));
-		trace_folio_ws_chg_se(folio, va, (unsigned short)memcg_id, refault_token, refs, 1, swap_level, -2, shadow, entry);
-	} else
+	if (shadow && (entry_is_entry_ext(shadow) == 1))
+		trace_folio_ws_chg_se(folio, va, (unsigned short)memcg_id, token, refs, 1, swap_level, -2, shadow, entry);
+	else
 		trace_folio_ws_chg(folio, va,  pgdat, (unsigned short)memcg_id, token, refs, 1, swap_level, -2, entry);
 #else
 	trace_folio_ws_chg(folio, va,  pgdat, (unsigned short)memcg_id, token, refs, 1, swap_level, -2, entry);

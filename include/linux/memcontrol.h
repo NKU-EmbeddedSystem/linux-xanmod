@@ -327,6 +327,11 @@ struct mem_cgroup {
 	struct lru_gen_mm_list mm_list;
 #endif
 
+#ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
+	/* per-memcg page_id counter for tracking pages across swap cycles */
+	atomic64_t page_id_counter;
+#endif
+
 	struct mem_cgroup_per_node *nodeinfo[];
 };
 

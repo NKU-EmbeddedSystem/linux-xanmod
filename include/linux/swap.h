@@ -379,12 +379,12 @@ extern struct kmem_cache * get_shadow_entry_cache(void);
 extern const unsigned int shadow_entry_magic;
 extern const unsigned int shadow_entry_invalidmagic;
 
-/* Global counter for unique page IDs */
-static atomic64_t global_page_id_counter = ATOMIC64_INIT(1);
-
-static inline unsigned long get_unique_page_id(void)
+/* Per-cgroup unique page ID allocation */
+static inline unsigned long get_unique_page_id(struct mem_cgroup *memcg)
 {
-	return (unsigned long)atomic64_inc_return(&global_page_id_counter);
+	if (unlikely(!memcg))
+		return 0;
+	return (unsigned long)atomic64_inc_return(&memcg->page_id_counter);
 }
 
 static inline struct shadow_entry* shadow_entry_alloc(void){
@@ -400,12 +400,9 @@ static inline struct shadow_entry* shadow_entry_alloc(void){
 		/* Initialize with conservative defaults scaled by 1000x */
 		entry_ext->hist_ts[SE_HIST_REFAULT_COUNT] = 0;
 		entry_ext->hist_ts[SE_HIST_AVG_DISTANCE] = SE_HIST_INITIAL_AVG_DIST * SE_HIST_SCALE_FACTOR;
-#if SE_HIST_USE_PAGE_ID
-		entry_ext->hist_ts[SE_HIST_PAGE_ID] = get_unique_page_id();
-#else
-		entry_ext->hist_ts[SE_HIST_EVICTION_RACE_STATE] = SE_RACE_STATE_NORMAL;  /* Initialize to normal (not in race window) */
-#endif
-		entry_ext->hist_ts[SE_HIST_EVICTION_TIME] = 0;
+		entry_ext->hist_ts[SE_HIST_PAGE_ID] = 0  /* page_id assigned later in pack_shadow_ext() */;
+		entry_ext->race_state = SE_RACE_STATE_NORMAL;  /* Initialize to normal (not in race window) */
+		entry_ext->eviction_time = 0;
 		// entry_ext->flag = 0;
 #endif
 #ifdef CONFIG_LRU_GEN_SHADOW_ENTRY_REF_CTRL

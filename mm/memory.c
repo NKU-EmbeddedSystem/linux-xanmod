@@ -3976,16 +3976,16 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 				/* Set hot signal values:
 				 * - refault_count=1: first refault (this event)
 				 * - avg_distance=0: immediate refault indicates very hot page
-				 * - eviction_race_state=NORMAL: mark as handled (when not using PAGE_ID)
-				 * - page_id: already set by shadow_entry_alloc() if SE_HIST_USE_PAGE_ID=1
+				 * - race_state=NORMAL: mark as handled
+				 * - page_id: assign new unique ID for this virtual page
 				 * - eviction_time: set to 0 (unknown eviction time for this race case)
 				 */
+				/* Assign page_id FIRST - primary identifier for this virtual page */
+				hot_shadow->hist_ts[SE_HIST_PAGE_ID] = get_unique_page_id(memcg);
 				hot_shadow->hist_ts[SE_HIST_REFAULT_COUNT] = 1;
 				hot_shadow->hist_ts[SE_HIST_AVG_DISTANCE] = 0;
-#if !SE_HIST_USE_PAGE_ID
-				hot_shadow->hist_ts[SE_HIST_EVICTION_RACE_STATE] = SE_RACE_STATE_NORMAL;
-#endif
-				hot_shadow->hist_ts[SE_HIST_EVICTION_TIME] = 0;  /* Unknown eviction time */
+				hot_shadow->race_state = SE_RACE_STATE_NORMAL;
+				hot_shadow->eviction_time = 0;  /* Unknown eviction time */
 				/* Attach to folio - next eviction will see this as re-eviction (wi_router) */
 				folio_add_shadow_entry(folio, hot_shadow);
 			}
@@ -3995,12 +3995,11 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			/* Folio has existing shadow_ext - check if in eviction race window */
 			struct shadow_entry* shadow_ext = folio->shadow_ext;
 
-#if !SE_HIST_USE_PAGE_ID
 			/* RACE DETECTION: Check if shadow_ext is in eviction race state
 			 * Race window: between add_to_swap() and workingset_eviction() completion
 			 * If flag=SE_RACE_STATE_EVICTING, refault occurred before shadow_ext update
 			 */
-			if (shadow_ext->hist_ts[SE_HIST_EVICTION_RACE_STATE] == SE_RACE_STATE_EVICTING) {
+			if (shadow_ext->race_state == SE_RACE_STATE_EVICTING) {
 				unsigned long refault_count = shadow_ext->hist_ts[SE_HIST_REFAULT_COUNT];
 				unsigned long old_avg_distance = shadow_ext->hist_ts[SE_HIST_AVG_DISTANCE];
 				unsigned long new_avg_distance;
@@ -4026,9 +4025,8 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 				/* Apply updates atomically */
 				shadow_ext->hist_ts[SE_HIST_REFAULT_COUNT] = refault_count + 1;
 				shadow_ext->hist_ts[SE_HIST_AVG_DISTANCE] = new_avg_distance;
-				shadow_ext->hist_ts[SE_HIST_EVICTION_RACE_STATE] = SE_RACE_STATE_NORMAL;
+				shadow_ext->race_state = SE_RACE_STATE_NORMAL;
 			}
-#endif /* !SE_HIST_USE_PAGE_ID */
 		}
 #endif
 		swp_entry_t pri_entry;

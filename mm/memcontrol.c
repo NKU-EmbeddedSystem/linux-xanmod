@@ -5514,6 +5514,10 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 	memcg->zswap_max = PAGE_COUNTER_MAX;
 #endif
 	page_counter_set_high(&memcg->swap, PAGE_COUNTER_MAX);
+#ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
+	/* Initialize per-cgroup page_id counter starting from 0 */
+	atomic64_set(&memcg->page_id_counter, 0);
+#endif
 	if (parent) {
 		memcg->swappiness = mem_cgroup_swappiness(parent);
 		memcg->oom_kill_disable = parent->oom_kill_disable;

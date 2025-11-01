@@ -1031,38 +1031,24 @@ typedef struct {
 	unsigned long val;
 } swp_entry_t;
 
-#define SE_HIST_SIZE	4
+#define SE_HIST_SIZE	3	/* Array size reduced to 3: refault_count, avg_distance, page_id */
 #define SE_HIST_REFAULT_COUNT	0	/* Number of refaults that have occurred */
 #define SE_HIST_AVG_DISTANCE	1	/* Average refault distance across all refaults */
 #define SE_HIST_PAGE_ID	2	/* Unique page identifier that follows page through swap cycles */
-#define SE_HIST_EVICTION_TIME	3	/* Eviction-time min_seq for refault distance calculation */
-
-/* Configuration: Choose between PAGE_ID functionality or eviction race state flag */
-#define SE_HIST_USE_PAGE_ID	0	/* 1 = use PAGE_ID, 0 = reuse field for eviction race state */
-
-#if SE_HIST_USE_PAGE_ID
-/* Original PAGE_ID functionality - field 2 stores unique page identifier */
-#define SE_HIST_FIELD2_NAME	"page_id"
-#else
-/* Reuse PAGE_ID field for eviction race state detection
- * This flag tracks whether shadow_ext is in the critical race window:
- * - During eviction after add_to_swap() but before workingset_eviction() completes
- * - If refault occurs in this window, shadow_ext update would be lost
- */
-#define SE_HIST_EVICTION_RACE_STATE	2	/* Eviction race window state indicator (reuses PAGE_ID field) */
-#define SE_HIST_FIELD2_NAME	"eviction_race_state"
 
 /* Eviction race state values */
 #define SE_RACE_STATE_NORMAL	0	/* Not in race window - safe state */
 #define SE_RACE_STATE_EVICTING	1	/* In race window - shadow_ext update pending */
-#endif
+
 #define SE_HIST_INITIAL_AVG_DIST	65535	/* Initial conservative assumption for average distance */
 #define SE_HIST_SCALE_FACTOR	1000	/* Scale factor for precision in average distance calculation */
 #define SHADOW_EXT_FLAG_STALE_SAVED 0x1
 typedef struct shadow_entry{
 	unsigned short magic;
 #ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
-	unsigned int hist_ts[SE_HIST_SIZE]; 
+	unsigned int hist_ts[SE_HIST_SIZE];  /* [0]=refault_count, [1]=avg_distance, [2]=page_id */
+	unsigned short eviction_time;        /* Eviction-time min_seq (16-bit) for refault distance */
+	unsigned short race_state;           /* Eviction race window state indicator */
 #endif
 #ifdef CONFIG_LRU_GEN_SHADOW_ENTRY_REF_CTRL
 	short ref : 7; //  if this shadow_entry is currently owned by a folio
