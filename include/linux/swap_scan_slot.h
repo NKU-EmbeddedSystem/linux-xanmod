@@ -39,9 +39,15 @@
 #define SEQ_DIFF_THRESHOLD             2
 
 /*
- * swap scanning watermark
- * start scanning when fast swap is under 1/ACTIVATE
- * stop scanning when fast swap is over 1/DEACTIVATE
+ * Swap scanning watermark thresholds
+ *
+ * When CONFIG_LRU_GEN_SWAP_ROUTER is enabled, migration uses dynamic thresholds:
+ *   - Activate:   utilization >= stress_threshold_very_high (default: 99%)
+ *   - Deactivate: utilization < stress_threshold_high (default: 95%)
+ *
+ * When CONFIG_LRU_GEN_SWAP_ROUTER is disabled, fallback to static watermarks:
+ *   - Activate:   free space < 1/32 (>96.875% full)
+ *   - Deactivate: free space > 1/16 (<93.75% full)
  */
 #define THRESHOLD_ACTIVATE_SWAP_SCAN_SLOT  32
 #define THRESHOLD_DEACTIVATE_SWAP_SCAN_SLOT 16

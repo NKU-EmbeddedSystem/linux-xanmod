@@ -2583,15 +2583,15 @@ static unsigned int find_next_to_unuse(struct swap_info_struct *si,
 }
 #ifdef CONFIG_LRU_GEN_STALE_SWP_ENTRY_SAVIOR
 /* si is ok */
-void swap_shadow_scan_next(struct swap_info_struct * si, struct lruvec * lruvec, 
-		unsigned long* scanned, unsigned long* saved)
+void swap_shadow_scan_next(struct swap_info_struct *si, struct lruvec *lruvec,
+			   unsigned long *scanned, unsigned long *saved)
 {
 	unsigned int type;
 	unsigned int start, end;
 	struct address_space *mapping;
 	int found;
 	swp_entry_t entry;
-	int threshold;
+	unsigned int threshold;
 	bool fullstop = false;
 
 	if (!si || !lruvec)
@@ -2599,7 +2599,17 @@ void swap_shadow_scan_next(struct swap_info_struct * si, struct lruvec * lruvec,
 	if (!__si_can_version(si))
 		return;
 
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+	/*
+	 * Use the same distance threshold as the router.
+	 * This ensures migration and allocation decisions are consistent.
+	 * READ_ONCE prevents compiler from reloading the value.
+	 */
+	threshold = READ_ONCE(current_router_distance);
+#else
 	threshold = SEQ_DIFF_THRESHOLD;
+#endif
+
 	type = si->type;
 	start = si->swap_scan_cur_bit = max_t(unsigned int, 0, si->swap_scan_cur_bit);
 	end = min_t(unsigned int, si->swap_scan_cur_bit + si->swap_scan_batch_nr - 1, si->max);

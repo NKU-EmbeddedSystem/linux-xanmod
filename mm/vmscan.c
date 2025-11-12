@@ -57,6 +57,8 @@
 #include <linux/khugepaged.h>
 #include <linux/rculist_nulls.h>
 #include <linux/random.h>
+#include <linux/ktime.h>
+#include <linux/seq_file.h>
 
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
@@ -6245,6 +6247,307 @@ static unsigned int swap_scan_savior_delays = 0;
 static const unsigned int swap_scan_savior_delay_max = 256;
 static unsigned int swap_scan_savior_enabled = 0;
 unsigned int clever_swap_alloc = 0;
+
+/*
+ * Router auto-adjustment system - delta-based dynamic tuning
+ *
+ * The system dynamically adjusts the router's avg_refault_distance threshold
+ * based on fast swap device utilization. Lower utilization uses positive deltas
+ * (more permissive) to encourage fast swap usage. Higher utilization uses
+ * negative deltas (more conservative) to preserve space.
+ *
+ * Effective threshold = ROUTER_DISTANCE_DEFAULT + delta
+ */
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+
+/* Default value from swap_router_params_init() */
+#define ROUTER_DISTANCE_DEFAULT		65535
+
+/* Global enable/disable for auto-adjustment */
+bool router_auto_adjust_enabled __read_mostly = true;
+
+/* Utilization thresholds in permille (parts per 1000) */
+unsigned int stress_threshold_very_low __read_mostly = 500;	/* 50% */
+unsigned int stress_threshold_low __read_mostly = 750;		/* 75% */
+unsigned int stress_threshold_medium __read_mostly = 850;	/* 85% */
+unsigned int stress_threshold_high __read_mostly = 950;		/* 95% */
+unsigned int stress_threshold_very_high __read_mostly = 990;	/* 99% */
+
+/* Delta adjustments applied to default threshold */
+int router_distance_delta_very_low __read_mostly = 5000;	/* <50%: very permissive */
+int router_distance_delta_low __read_mostly = 3000;		/* 50-75%: permissive */
+int router_distance_delta_medium __read_mostly = 1000;		/* 75-85%: slightly permissive */
+int router_distance_delta_high __read_mostly = 500;		/* 85-95%: barely permissive */
+int router_distance_delta_very_high __read_mostly = 0;		/* 95-99%: default */
+int router_distance_delta_critical __read_mostly = -1000;	/* >99%: conservative */
+
+/* Current active threshold - shared with migrator */
+unsigned int current_router_distance = ROUTER_DISTANCE_DEFAULT;
+EXPORT_SYMBOL(current_router_distance);
+
+/* Parameter change log - ring buffer for tracking adjustments */
+#define ROUTER_PARAM_LOG_SIZE (1024 * 1024)  /* 1M entries, ~29MB */
+
+struct router_param_log_entry {
+	u64 timestamp;		/* ktime in nanoseconds */
+	unsigned int util_permille;
+	int delta;
+	unsigned int old_distance;
+	unsigned int new_distance;
+};
+
+static struct {
+	struct router_param_log_entry entries[ROUTER_PARAM_LOG_SIZE];
+	unsigned int head;	/* Next write position */
+	unsigned int count;	/* Total entries written (for wrapping detection) */
+	spinlock_t lock;
+} router_param_log;
+
+static struct dentry *router_param_log_dentry;
+
+/**
+ * log_router_param_change - Record parameter change to ring buffer
+ */
+static void log_router_param_change(unsigned int util_permille, int delta,
+				    unsigned int old_distance,
+				    unsigned int new_distance)
+{
+	struct router_param_log_entry *entry;
+	unsigned long flags;
+
+	spin_lock_irqsave(&router_param_log.lock, flags);
+
+	entry = &router_param_log.entries[router_param_log.head];
+	entry->timestamp = ktime_get_ns();
+	entry->util_permille = util_permille;
+	entry->delta = delta;
+	entry->old_distance = old_distance;
+	entry->new_distance = new_distance;
+
+	router_param_log.head = (router_param_log.head + 1) % ROUTER_PARAM_LOG_SIZE;
+	router_param_log.count++;
+
+	spin_unlock_irqrestore(&router_param_log.lock, flags);
+}
+
+/**
+ * router_param_log_show - seq_file show function for debugfs
+ */
+static int router_param_log_show(struct seq_file *m, void *v)
+{
+	unsigned int i, idx, entries_to_show;
+	unsigned long flags;
+	struct router_param_log_entry entry;
+	u64 sec, nsec;
+
+	spin_lock_irqsave(&router_param_log.lock, flags);
+
+	/* Determine how many entries to show */
+	entries_to_show = min(router_param_log.count, ROUTER_PARAM_LOG_SIZE);
+
+	if (entries_to_show == 0) {
+		spin_unlock_irqrestore(&router_param_log.lock, flags);
+		seq_puts(m, "No parameter changes recorded yet.\n");
+		return 0;
+	}
+
+	seq_printf(m, "Total parameter changes: %u\n", router_param_log.count);
+	seq_puts(m, "Timestamp (sec.nsec)        Utilization  Delta     Old       New\n");
+	seq_puts(m, "----------------------------------------------------------------\n");
+
+	/* Calculate starting index for oldest entry */
+	if (router_param_log.count > ROUTER_PARAM_LOG_SIZE)
+		idx = router_param_log.head;  /* Wrapped, start at oldest */
+	else
+		idx = 0;  /* Not wrapped yet, start at beginning */
+
+	for (i = 0; i < entries_to_show; i++) {
+		entry = router_param_log.entries[idx];
+		idx = (idx + 1) % ROUTER_PARAM_LOG_SIZE;
+
+		/* Convert nanoseconds to sec.nsec format */
+		sec = entry.timestamp;
+		nsec = do_div(sec, 1000000000ULL);
+
+		seq_printf(m, "%10llu.%09llu    %3u.%u%%      %+6d    %-9u %-9u\n",
+			   sec, nsec,
+			   entry.util_permille / 10, entry.util_permille % 10,
+			   entry.delta,
+			   entry.old_distance,
+			   entry.new_distance);
+	}
+
+	spin_unlock_irqrestore(&router_param_log.lock, flags);
+	return 0;
+}
+
+static int router_param_log_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, router_param_log_show, NULL);
+}
+
+/**
+ * router_param_log_write - Reset the ring buffer
+ * @file: file pointer
+ * @buf: user buffer (content ignored, any write triggers reset)
+ * @count: number of bytes written
+ * @ppos: file position (unused)
+ *
+ * Writing anything to this file clears the ring buffer.
+ * Returns: number of bytes written on success
+ */
+static ssize_t router_param_log_write(struct file *file, const char __user *buf,
+				      size_t count, loff_t *ppos)
+{
+	unsigned long flags;
+
+	/* Clear the ring buffer */
+	spin_lock_irqsave(&router_param_log.lock, flags);
+	router_param_log.head = 0;
+	router_param_log.count = 0;
+	memset(router_param_log.entries, 0,
+	       sizeof(router_param_log.entries));
+	spin_unlock_irqrestore(&router_param_log.lock, flags);
+
+	pr_info("Router parameter log cleared\n");
+	return count;
+}
+
+static const struct file_operations router_param_log_fops = {
+	.open = router_param_log_open,
+	.read = seq_read,
+	.write = router_param_log_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+/**
+ * update_all_memcg_router_params - Update router threshold for all memory cgroups
+ * @new_distance: New avg_refault_distance threshold value
+ *
+ * Iterates through all memory cgroups and updates their router parameters.
+ * This follows the same pattern as swap_router_params_init() to maintain
+ * consistency with cgroup initialization.
+ *
+ * Context: Called from kswapd context every 256 cycles
+ */
+static void update_all_memcg_router_params(unsigned int new_distance)
+{
+	struct mem_cgroup *memcg;
+	struct mem_cgroup_per_node *pn;
+	int nid;
+
+	/* Update root memcg for all NUMA nodes */
+	for_each_node_state(nid, N_MEMORY) {
+		struct lruvec *lruvec = &NODE_DATA(nid)->__lruvec;
+		WRITE_ONCE(lruvec->router_params.avg_refault_distance,
+			   new_distance);
+	}
+
+#ifdef CONFIG_MEMCG
+	/*
+	 * Update all child memory cgroups.
+	 * Use mem_cgroup_iter() to safely traverse the cgroup hierarchy.
+	 */
+	memcg = NULL;
+	while ((memcg = mem_cgroup_iter(NULL, memcg, NULL))) {
+		for_each_node_state(nid, N_MEMORY) {
+			pn = memcg->nodeinfo[nid];
+			if (likely(pn))
+				WRITE_ONCE(pn->lruvec.router_params.avg_refault_distance,
+					   new_distance);
+		}
+	}
+#endif /* CONFIG_MEMCG */
+
+	/* Update global tracker for migrator */
+	WRITE_ONCE(current_router_distance, new_distance);
+}
+
+/**
+ * update_router_based_on_fast_swap_stress - Adjust router threshold dynamically
+ *
+ * Calculates the router distance threshold by applying utilization-based delta
+ * adjustments to the default initialization value (ROUTER_DISTANCE_DEFAULT).
+ *
+ * Utilization Strategy:
+ *   Low utilization (<50%):  Positive delta - encourage fast swap usage
+ *   Medium utilization (50-95%): Progressive tightening
+ *   High utilization (95-99%): Use original default
+ *   Critical utilization (>99%): Negative delta - preserve space
+ *
+ * Context: Called from kswapd context every 256 cycles
+ */
+static void update_router_based_on_fast_swap_stress(void)
+{
+	struct swap_info_struct *si;
+	unsigned int fill_permille;
+	int delta;
+	unsigned int new_distance;
+	long long tmp;
+
+	if (!router_auto_adjust_enabled)
+		return;
+
+	si = global_fastest_swap_si();
+	if (!si || unlikely(si->pages == 0))
+		return;
+
+	/*
+	 * Calculate fill ratio in permille: (inuse / total) * 1000
+	 * Avoid division by zero - already checked pages != 0 above
+	 */
+	fill_permille = (si->inuse_pages * 1000) / si->pages;
+
+	/*
+	 * Select delta based on utilization level.
+	 * Use if-else ladder for clear branching and better branch prediction.
+	 */
+	if (fill_permille < stress_threshold_very_low)
+		delta = router_distance_delta_very_low;
+	else if (fill_permille < stress_threshold_low)
+		delta = router_distance_delta_low;
+	else if (fill_permille < stress_threshold_medium)
+		delta = router_distance_delta_medium;
+	else if (fill_permille < stress_threshold_high)
+		delta = router_distance_delta_high;
+	else if (fill_permille < stress_threshold_very_high)
+		delta = router_distance_delta_very_high;
+	else
+		delta = router_distance_delta_critical;
+
+	/*
+	 * Calculate new threshold with overflow/underflow protection.
+	 * Use signed 64-bit arithmetic to detect overflow.
+	 */
+	tmp = (long long)ROUTER_DISTANCE_DEFAULT + delta;
+	if (tmp < 0)
+		new_distance = 0;
+	else if (tmp > UINT_MAX)
+		new_distance = UINT_MAX;
+	else
+		new_distance = (unsigned int)tmp;
+
+	/*
+	 * Only update if changed to avoid unnecessary cache line bouncing
+	 * and memcg iteration overhead.
+	 */
+	if (new_distance != READ_ONCE(current_router_distance)) {
+		unsigned int old_distance = READ_ONCE(current_router_distance);
+
+		update_all_memcg_router_params(new_distance);
+
+		/* Log to dedicated file for analysis */
+		log_router_param_change(fill_permille, delta, old_distance, new_distance);
+
+		trace_printk("Fast swap: %u.%u%% full, delta=%+d, old=%u, new=%u\n",
+			     fill_permille / 10, fill_permille % 10,
+			     delta, old_distance, new_distance);
+	}
+}
+
+#endif /* CONFIG_LRU_GEN_SWAP_ROUTER */
+
 // static void lru_gen_shrink_node(struct pglist_data *pgdat, struct scan_control *sc)
 static void lru_gen_shrink_node(struct pglist_data *pgdat, struct scan_control *sc, int force)
 {
@@ -6293,8 +6596,16 @@ static void lru_gen_shrink_node(struct pglist_data *pgdat, struct scan_control *
 #ifdef CONFIG_LRU_GEN_STALE_SWP_ENTRY_SAVIOR
 	if (likely(swap_scan_savior_delays++ < swap_scan_savior_delay_max))
 		goto done;
-	if (current_is_kswapd()){
-		if (swap_scan_savior_enabled && pgdat->prio_lruvec){
+	if (current_is_kswapd()) {
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+		/*
+		 * Update router parameters based on current fast swap utilization.
+		 * This happens every 256 kswapd cycles regardless of whether
+		 * migration will run, ensuring parameters stay current.
+		 */
+		update_router_based_on_fast_swap_stress();
+#endif
+		if (swap_scan_savior_enabled && pgdat->prio_lruvec) {
 			swap_scan_savior(sc, pgdat->prio_lruvec);
 		}
 		swap_scan_savior_delays = 0;
@@ -7030,8 +7341,20 @@ static int __init init_lru_gen(void)
 
 	debugfs_create_file("lru_gen", 0644, NULL, NULL, &lru_gen_rw_fops);
 	debugfs_create_file("lru_gen_full", 0444, NULL, NULL, &lru_gen_ro_fops);
-	swap_scan_savior_debugfs_file = debugfs_create_file("swap_scan_savior_enabled", 0666, NULL, NULL, &swap_scan_savior_enabled_fops);	
-	clever_swap_alloc_debugfs_file = debugfs_create_file("clever_swap_alloc", 0666, NULL, NULL, &clever_swap_alloc_fops);	
+	swap_scan_savior_debugfs_file = debugfs_create_file("swap_scan_savior_enabled", 0666, NULL, NULL, &swap_scan_savior_enabled_fops);
+	clever_swap_alloc_debugfs_file = debugfs_create_file("clever_swap_alloc", 0666, NULL, NULL, &clever_swap_alloc_fops);
+
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+	/* Initialize router parameter change log */
+	spin_lock_init(&router_param_log.lock);
+	router_param_log.head = 0;
+	router_param_log.count = 0;
+	router_param_log_dentry = debugfs_create_file("router_param_log", 0644, NULL, NULL,
+						      &router_param_log_fops);
+	if (!router_param_log_dentry)
+		pr_err("lru_gen: failed to create router_param_log debugfs file\n");
+#endif
+
 	return 0;
 };
 late_initcall(init_lru_gen);

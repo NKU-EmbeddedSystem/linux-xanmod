@@ -2134,17 +2134,19 @@ reset:
 	goto retry;
 }
 
-unsigned swap_scan_entries_savior(struct address_space *mapping, 
-        struct lruvec * target_lruvec, pgoff_t start, pgoff_t end, 
-		int type, int version, int threshold, bool* full)
+unsigned swap_scan_entries_savior(struct address_space *mapping,
+				  struct lruvec *target_lruvec, pgoff_t start,
+				  pgoff_t end, int type, int version,
+				  unsigned int threshold, bool *full)
 {
 	int scan_count, save_count;
 	struct folio *folio;
-	struct shadow_entry* entry_ext;
+	struct shadow_entry *entry_ext;
 	int memcg_id;
 	int target_memcg_id;
 	struct lru_gen_folio *lrugen;
 	unsigned long min_seq, old_seq;
+	unsigned long age_distance;
 	swp_entry_t entry;
 	unsigned long offset;
 	unsigned count_choosed;
@@ -2155,40 +2157,59 @@ unsigned swap_scan_entries_savior(struct address_space *mapping,
 	lrugen = &target_lruvec->lrugen;
 	min_seq = READ_ONCE(lrugen->min_seq[type]);
 	scan_count = save_count = 0;
+
 	rcu_read_lock();
 	while ((folio = find_get_entry(&xas, end, XA_PRESENT)) != NULL) {
-		if(entry_is_entry_ext(folio) == 1){
-			entry_ext = (struct shadow_entry*)folio;
+		if (entry_is_entry_ext(folio) == 1) {
+			entry_ext = (struct shadow_entry *)folio;
 			memcg_id = entry_ext_memcg_id(entry_ext);
-			if (target_memcg_id == memcg_id && !entry_ext->processed){ //match check it
+
+			/* Match target memcg and not already processed */
+			if (target_memcg_id == memcg_id && !entry_ext->processed) {
 				old_seq = entry_ext->eviction_time;
-				if (old_seq == 0) {
+				if (unlikely(old_seq == 0)) {
 					pr_err("inner swap_address shadow_ext got eviction_time == 0");
+					continue;
 				}
-				if (min_seq - old_seq >= threshold){
-					trace_scan_entries_savior(memcg_id, old_seq, min_seq, threshold);
+
+				/*
+				 * Convert generation age to distance units.
+				 * Multiply by 1000 to match router's distance scale.
+				 * This ensures migrator and router use the same metric.
+				 */
+				age_distance = (min_seq - old_seq) * 1000;
+
+				if (age_distance >= threshold) {
+					trace_scan_entries_savior(memcg_id, old_seq,
+								  min_seq, age_distance);
+
 					offset = xas.xa_index;
 					entry = swp_entry_version(type, offset, version);
-					if (__swap_count(entry) != 1){
+
+					/* Only migrate non-shared pages */
+					if (__swap_count(entry) != 1)
 						continue;
-					}
-					if (add_to_scan_slot(entry) == -2){
-						MULTISWAP_MIG_INFO("add_to_scan_slot stoped");
+
+					if (add_to_scan_slot(entry) == -2) {
+						MULTISWAP_MIG_INFO("add_to_scan_slot stopped");
 						*full = true;
 						break;
 					}
+
 					entry_ext->processed = 1;
-					count_choosed ++;
+					count_choosed++;
 				}
 			}
-		}
-		else{
-			if (!xa_is_value(folio) && !(entry_is_entry_ext(folio) == 1))  //folio
+		} else {
+			/* Regular folio - release reference */
+			if (!xa_is_value(folio) && !(entry_is_entry_ext(folio) == 1))
 				folio_put(folio);
 		}
 	}
 	rcu_read_unlock();
-	count_memcg_events(lruvec_memcg(target_lruvec), SWAP_STALE_SCAN, end - start);
+
+	count_memcg_events(lruvec_memcg(target_lruvec), SWAP_STALE_SCAN,
+			   end - start);
 
 	return count_choosed;
 }

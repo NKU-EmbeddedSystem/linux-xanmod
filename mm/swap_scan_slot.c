@@ -40,20 +40,54 @@ static void reactivate_swap_scan_slot(void)
 
 void check_swap_scan_active(struct swap_info_struct *si, long left, long total)
 {
+	unsigned int fill_permille;
+
 	if (!swap_scan_slot_enabled)
 		return;
 	if (!__si_can_version(si))
 		return;
-	//check if fast swap low, use scan
-	if (left * THRESHOLD_ACTIVATE_SWAP_SCAN_SLOT < total){
+
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+	/*
+	 * Use dynamic thresholds aligned with router auto-adjustment system.
+	 * Migration starts at critical utilization (≥99%) and stops when
+	 * utilization drops below high threshold (<95%).
+	 *
+	 * This creates hysteresis to prevent oscillation and aligns migration
+	 * behavior with the stress-based parameter adjustment.
+	 */
+	extern unsigned int stress_threshold_very_high;	/* Default: 990 (99%) */
+	extern unsigned int stress_threshold_high;		/* Default: 950 (95%) */
+
+	if (unlikely(total == 0))
+		return;
+
+	/* Calculate utilization in permille: (used / total) * 1000 */
+	fill_permille = ((total - left) * 1000) / total;
+
+	/* Activate migration when utilization reaches critical level (≥99%) */
+	if (fill_permille >= READ_ONCE(stress_threshold_very_high)) {
 		reactivate_swap_scan_slot();
 		trace_swap_scan_change_state(1, left, total);
 	}
-	//check if slow swap high, cancel scan
-	if (left * THRESHOLD_DEACTIVATE_SWAP_SCAN_SLOT > total){
-		deactivate_swap_scan_slot();	 
+
+	/* Deactivate migration when utilization drops below high threshold (<95%) */
+	if (fill_permille < READ_ONCE(stress_threshold_high)) {
+		deactivate_swap_scan_slot();
 		trace_swap_scan_change_state(0, left, total);
 	}
+#else
+	/* Fall back to original hardcoded watermarks if router not enabled */
+	if (left * THRESHOLD_ACTIVATE_SWAP_SCAN_SLOT < total) {
+		reactivate_swap_scan_slot();
+		trace_swap_scan_change_state(1, left, total);
+	}
+
+	if (left * THRESHOLD_DEACTIVATE_SWAP_SCAN_SLOT > total) {
+		deactivate_swap_scan_slot();
+		trace_swap_scan_change_state(0, left, total);
+	}
+#endif /* CONFIG_LRU_GEN_SWAP_ROUTER */
 }
 
 static int alloc_swap_scan_slot(unsigned int cpu)

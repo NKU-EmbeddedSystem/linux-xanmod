@@ -2910,12 +2910,390 @@ static ssize_t swap_scan_enabled_store(struct kobject *kobj,
 	return count;
 }
 
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+/*
+ * Router auto-adjustment sysfs interface
+ *
+ * Exposes all tunable parameters to userspace for runtime configuration
+ * without requiring kernel recompilation.
+ */
+
+/* Master enable/disable switch */
+static ssize_t router_auto_adjust_show(struct kobject *kobj,
+				       struct kobj_attribute *attr, char *buf)
+{
+	extern bool router_auto_adjust_enabled;
+	return sysfs_emit(buf, "%s\n",
+			  router_auto_adjust_enabled ? "true" : "false");
+}
+
+static ssize_t router_auto_adjust_store(struct kobject *kobj,
+					struct kobj_attribute *attr,
+					const char *buf, size_t count)
+{
+	extern bool router_auto_adjust_enabled;
+	bool val;
+	int ret;
+
+	ret = kstrtobool(buf, &val);
+	if (ret)
+		return ret;
+
+	WRITE_ONCE(router_auto_adjust_enabled, val);
+	return count;
+}
+
+/* Current effective threshold (read-only) */
+static ssize_t current_router_distance_show(struct kobject *kobj,
+					    struct kobj_attribute *attr,
+					    char *buf)
+{
+	extern unsigned int current_router_distance;
+	return sysfs_emit(buf, "%u\n", READ_ONCE(current_router_distance));
+}
+
+/* Utilization threshold: very low (default 50%) */
+static ssize_t stress_threshold_very_low_show(struct kobject *kobj,
+					       struct kobj_attribute *attr,
+					       char *buf)
+{
+	extern unsigned int stress_threshold_very_low;
+	return sysfs_emit(buf, "%u\n", READ_ONCE(stress_threshold_very_low));
+}
+
+static ssize_t stress_threshold_very_low_store(struct kobject *kobj,
+					        struct kobj_attribute *attr,
+					        const char *buf, size_t count)
+{
+	extern unsigned int stress_threshold_very_low;
+	unsigned int val;
+	int ret;
+
+	ret = kstrtouint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	if (val > 1000)
+		return -EINVAL;
+
+	WRITE_ONCE(stress_threshold_very_low, val);
+	return count;
+}
+
+/* Utilization threshold: low (default 75%) */
+static ssize_t stress_threshold_low_show(struct kobject *kobj,
+					 struct kobj_attribute *attr,
+					 char *buf)
+{
+	extern unsigned int stress_threshold_low;
+	return sysfs_emit(buf, "%u\n", READ_ONCE(stress_threshold_low));
+}
+
+static ssize_t stress_threshold_low_store(struct kobject *kobj,
+					  struct kobj_attribute *attr,
+					  const char *buf, size_t count)
+{
+	extern unsigned int stress_threshold_low;
+	unsigned int val;
+	int ret;
+
+	ret = kstrtouint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	if (val > 1000)
+		return -EINVAL;
+
+	WRITE_ONCE(stress_threshold_low, val);
+	return count;
+}
+
+/* Utilization threshold: medium (default 85%) */
+static ssize_t stress_threshold_medium_show(struct kobject *kobj,
+					    struct kobj_attribute *attr,
+					    char *buf)
+{
+	extern unsigned int stress_threshold_medium;
+	return sysfs_emit(buf, "%u\n", READ_ONCE(stress_threshold_medium));
+}
+
+static ssize_t stress_threshold_medium_store(struct kobject *kobj,
+					     struct kobj_attribute *attr,
+					     const char *buf, size_t count)
+{
+	extern unsigned int stress_threshold_medium;
+	unsigned int val;
+	int ret;
+
+	ret = kstrtouint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	if (val > 1000)
+		return -EINVAL;
+
+	WRITE_ONCE(stress_threshold_medium, val);
+	return count;
+}
+
+/* Utilization threshold: high (default 95%) */
+static ssize_t stress_threshold_high_show(struct kobject *kobj,
+					  struct kobj_attribute *attr,
+					  char *buf)
+{
+	extern unsigned int stress_threshold_high;
+	return sysfs_emit(buf, "%u\n", READ_ONCE(stress_threshold_high));
+}
+
+static ssize_t stress_threshold_high_store(struct kobject *kobj,
+					   struct kobj_attribute *attr,
+					   const char *buf, size_t count)
+{
+	extern unsigned int stress_threshold_high;
+	unsigned int val;
+	int ret;
+
+	ret = kstrtouint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	if (val > 1000)
+		return -EINVAL;
+
+	WRITE_ONCE(stress_threshold_high, val);
+	return count;
+}
+
+/* Utilization threshold: very high (default 99%) */
+static ssize_t stress_threshold_very_high_show(struct kobject *kobj,
+					       struct kobj_attribute *attr,
+					       char *buf)
+{
+	extern unsigned int stress_threshold_very_high;
+	return sysfs_emit(buf, "%u\n", READ_ONCE(stress_threshold_very_high));
+}
+
+static ssize_t stress_threshold_very_high_store(struct kobject *kobj,
+					        struct kobj_attribute *attr,
+					        const char *buf, size_t count)
+{
+	extern unsigned int stress_threshold_very_high;
+	unsigned int val;
+	int ret;
+
+	ret = kstrtouint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	if (val > 1000)
+		return -EINVAL;
+
+	WRITE_ONCE(stress_threshold_very_high, val);
+	return count;
+}
+
+/* Delta: very low utilization (default +5000) */
+static ssize_t router_distance_delta_very_low_show(struct kobject *kobj,
+						   struct kobj_attribute *attr,
+						   char *buf)
+{
+	extern int router_distance_delta_very_low;
+	return sysfs_emit(buf, "%d\n", READ_ONCE(router_distance_delta_very_low));
+}
+
+static ssize_t router_distance_delta_very_low_store(struct kobject *kobj,
+						    struct kobj_attribute *attr,
+						    const char *buf, size_t count)
+{
+	extern int router_distance_delta_very_low;
+	int val;
+	int ret;
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	WRITE_ONCE(router_distance_delta_very_low, val);
+	return count;
+}
+
+/* Delta: low utilization (default +3000) */
+static ssize_t router_distance_delta_low_show(struct kobject *kobj,
+					      struct kobj_attribute *attr,
+					      char *buf)
+{
+	extern int router_distance_delta_low;
+	return sysfs_emit(buf, "%d\n", READ_ONCE(router_distance_delta_low));
+}
+
+static ssize_t router_distance_delta_low_store(struct kobject *kobj,
+					       struct kobj_attribute *attr,
+					       const char *buf, size_t count)
+{
+	extern int router_distance_delta_low;
+	int val;
+	int ret;
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	WRITE_ONCE(router_distance_delta_low, val);
+	return count;
+}
+
+/* Delta: medium utilization (default +1000) */
+static ssize_t router_distance_delta_medium_show(struct kobject *kobj,
+						 struct kobj_attribute *attr,
+						 char *buf)
+{
+	extern int router_distance_delta_medium;
+	return sysfs_emit(buf, "%d\n", READ_ONCE(router_distance_delta_medium));
+}
+
+static ssize_t router_distance_delta_medium_store(struct kobject *kobj,
+						  struct kobj_attribute *attr,
+						  const char *buf, size_t count)
+{
+	extern int router_distance_delta_medium;
+	int val;
+	int ret;
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	WRITE_ONCE(router_distance_delta_medium, val);
+	return count;
+}
+
+/* Delta: high utilization (default +500) */
+static ssize_t router_distance_delta_high_show(struct kobject *kobj,
+					       struct kobj_attribute *attr,
+					       char *buf)
+{
+	extern int router_distance_delta_high;
+	return sysfs_emit(buf, "%d\n", READ_ONCE(router_distance_delta_high));
+}
+
+static ssize_t router_distance_delta_high_store(struct kobject *kobj,
+						struct kobj_attribute *attr,
+						const char *buf, size_t count)
+{
+	extern int router_distance_delta_high;
+	int val;
+	int ret;
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	WRITE_ONCE(router_distance_delta_high, val);
+	return count;
+}
+
+/* Delta: very high utilization (default 0) */
+static ssize_t router_distance_delta_very_high_show(struct kobject *kobj,
+						    struct kobj_attribute *attr,
+						    char *buf)
+{
+	extern int router_distance_delta_very_high;
+	return sysfs_emit(buf, "%d\n", READ_ONCE(router_distance_delta_very_high));
+}
+
+static ssize_t router_distance_delta_very_high_store(struct kobject *kobj,
+						     struct kobj_attribute *attr,
+						     const char *buf, size_t count)
+{
+	extern int router_distance_delta_very_high;
+	int val;
+	int ret;
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	WRITE_ONCE(router_distance_delta_very_high, val);
+	return count;
+}
+
+/* Delta: critical utilization (default -1000) */
+static ssize_t router_distance_delta_critical_show(struct kobject *kobj,
+						   struct kobj_attribute *attr,
+						   char *buf)
+{
+	extern int router_distance_delta_critical;
+	return sysfs_emit(buf, "%d\n", READ_ONCE(router_distance_delta_critical));
+}
+
+static ssize_t router_distance_delta_critical_store(struct kobject *kobj,
+						    struct kobj_attribute *attr,
+						    const char *buf, size_t count)
+{
+	extern int router_distance_delta_critical;
+	int val;
+	int ret;
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	WRITE_ONCE(router_distance_delta_critical, val);
+	return count;
+}
+
+#endif /* CONFIG_LRU_GEN_SWAP_ROUTER */
+
 static struct kobj_attribute vma_ra_enabled_attr = __ATTR_RW(vma_ra_enabled);
 static struct kobj_attribute swap_scan_enabled_attr = __ATTR_RW(swap_scan_enabled);
+
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+static struct kobj_attribute router_auto_adjust_attr =
+	__ATTR_RW(router_auto_adjust);
+static struct kobj_attribute current_router_distance_attr =
+	__ATTR_RO(current_router_distance);
+static struct kobj_attribute stress_threshold_very_low_attr =
+	__ATTR_RW(stress_threshold_very_low);
+static struct kobj_attribute stress_threshold_low_attr =
+	__ATTR_RW(stress_threshold_low);
+static struct kobj_attribute stress_threshold_medium_attr =
+	__ATTR_RW(stress_threshold_medium);
+static struct kobj_attribute stress_threshold_high_attr =
+	__ATTR_RW(stress_threshold_high);
+static struct kobj_attribute stress_threshold_very_high_attr =
+	__ATTR_RW(stress_threshold_very_high);
+static struct kobj_attribute router_distance_delta_very_low_attr =
+	__ATTR_RW(router_distance_delta_very_low);
+static struct kobj_attribute router_distance_delta_low_attr =
+	__ATTR_RW(router_distance_delta_low);
+static struct kobj_attribute router_distance_delta_medium_attr =
+	__ATTR_RW(router_distance_delta_medium);
+static struct kobj_attribute router_distance_delta_high_attr =
+	__ATTR_RW(router_distance_delta_high);
+static struct kobj_attribute router_distance_delta_very_high_attr =
+	__ATTR_RW(router_distance_delta_very_high);
+static struct kobj_attribute router_distance_delta_critical_attr =
+	__ATTR_RW(router_distance_delta_critical);
+#endif /* CONFIG_LRU_GEN_SWAP_ROUTER */
 
 static struct attribute *swap_attrs[] = {
 	&vma_ra_enabled_attr.attr,
 	&swap_scan_enabled_attr.attr,
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+	&router_auto_adjust_attr.attr,
+	&current_router_distance_attr.attr,
+	&stress_threshold_very_low_attr.attr,
+	&stress_threshold_low_attr.attr,
+	&stress_threshold_medium_attr.attr,
+	&stress_threshold_high_attr.attr,
+	&stress_threshold_very_high_attr.attr,
+	&router_distance_delta_very_low_attr.attr,
+	&router_distance_delta_low_attr.attr,
+	&router_distance_delta_medium_attr.attr,
+	&router_distance_delta_high_attr.attr,
+	&router_distance_delta_very_high_attr.attr,
+	&router_distance_delta_critical_attr.attr,
+#endif /* CONFIG_LRU_GEN_SWAP_ROUTER */
 	NULL,
 };
 
