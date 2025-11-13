@@ -5345,17 +5345,18 @@ struct mem_cgroup *mem_cgroup_get_from_ino(unsigned long ino)
 #ifdef CONFIG_LRU_GEN_SWAP_ROUTER
 /**
  * swap_router_decision - Simple decision function for swap routing
- * @current_refault_count: Current refault count
- * @current_avg_refault_distance: Current average refault distance
- * @params: Router parameters containing thresholds
+ * @current_refault_count: Current refault count from shadow entry
+ * @current_avg_refault_distance: Current average refault distance from shadow entry
+ * @refault_count_threshold: Minimum refault count required (per-cgroup)
+ * @avg_distance_threshold: Maximum average distance allowed (global)
  *
  * Returns 1 if folio should use fast swap, 0 for slow swap
  */
 int swap_router_decision(int current_refault_count, int current_avg_refault_distance,
-                        struct swap_router_params *params)
+                        int refault_count_threshold, int avg_distance_threshold)
 {
-    if (current_refault_count >= params->refault_count &&
-        current_avg_refault_distance <= params->avg_refault_distance)
+    if (current_refault_count >= refault_count_threshold &&
+        current_avg_refault_distance <= avg_distance_threshold)
         return 1;
     return 0;
 }
@@ -5367,7 +5368,7 @@ int swap_router_decision(int current_refault_count, int current_avg_refault_dist
 void swap_router_params_init(struct swap_router_params *params)
 {
     params->refault_count = 0;
-    params->avg_refault_distance = 65535;
+    params->avg_refault_distance = 20000;
 }
 #endif
 

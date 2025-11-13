@@ -1921,7 +1921,7 @@ static inline void obj_cgroup_uncharge_zswap(struct obj_cgroup *objcg,
 #ifdef CONFIG_LRU_GEN_SWAP_ROUTER
 
 int swap_router_decision(int current_refault_count, int current_avg_refault_distance,
-                        struct swap_router_params *params);
+                        int refault_count_threshold, int avg_distance_threshold);
 
 void swap_router_params_init(struct swap_router_params *params);
 

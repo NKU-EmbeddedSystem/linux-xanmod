@@ -6249,37 +6249,34 @@ static unsigned int swap_scan_savior_enabled = 0;
 unsigned int clever_swap_alloc = 0;
 
 /*
- * Router auto-adjustment system - delta-based dynamic tuning
+ * Router auto-adjustment system - incremental delta-based tuning
  *
  * The system dynamically adjusts the router's avg_refault_distance threshold
- * based on fast swap device utilization. Lower utilization uses positive deltas
- * (more permissive) to encourage fast swap usage. Higher utilization uses
- * negative deltas (more conservative) to preserve space.
+ * based on fast swap device utilization. Adjustments only trigger when
+ * utilization >= 80% to allow system to stabilize and improve convergence.
  *
- * Effective threshold = ROUTER_DISTANCE_DEFAULT + delta
+ * Uses small incremental deltas (+500, +100, 0, -100) applied to current value
+ * for gradual adaptation without oscillation. Lock-free updates for low overhead.
  */
 #ifdef CONFIG_LRU_GEN_SWAP_ROUTER
 
 /* Default value from swap_router_params_init() */
-#define ROUTER_DISTANCE_DEFAULT		65535
+#define ROUTER_DISTANCE_DEFAULT		50000
 
 /* Global enable/disable for auto-adjustment */
 bool router_auto_adjust_enabled __read_mostly = true;
 
-/* Utilization thresholds in permille (parts per 1000) */
-unsigned int stress_threshold_very_low __read_mostly = 500;	/* 50% */
-unsigned int stress_threshold_low __read_mostly = 750;		/* 75% */
+/* Utilization thresholds in permille (parts per 1000) - only trigger above 80% */
+unsigned int stress_threshold_low __read_mostly = 800;		/* 80% */
 unsigned int stress_threshold_medium __read_mostly = 850;	/* 85% */
-unsigned int stress_threshold_high __read_mostly = 950;		/* 95% */
-unsigned int stress_threshold_very_high __read_mostly = 990;	/* 99% */
+unsigned int stress_threshold_high __read_mostly = 900;		/* 90% */
+unsigned int stress_threshold_very_high __read_mostly = 950;	/* 95% */
 
-/* Delta adjustments applied to default threshold */
-int router_distance_delta_very_low __read_mostly = 5000;	/* <50%: very permissive */
-int router_distance_delta_low __read_mostly = 3000;		/* 50-75%: permissive */
-int router_distance_delta_medium __read_mostly = 1000;		/* 75-85%: slightly permissive */
-int router_distance_delta_high __read_mostly = 500;		/* 85-95%: barely permissive */
-int router_distance_delta_very_high __read_mostly = 0;		/* 95-99%: default */
-int router_distance_delta_critical __read_mostly = -1000;	/* >99%: conservative */
+/* Delta adjustments applied to current threshold - much smaller for convergence */
+int router_distance_delta_low __read_mostly = 50;		/* 80-85%: +50 */
+int router_distance_delta_medium __read_mostly = 10;		/* 85-90%: +10 */
+int router_distance_delta_high __read_mostly = 0;		/* 90-95%: no adjustment */
+int router_distance_delta_critical __read_mostly = -100;	/* >95%: -100 */
 
 /* Current active threshold - shared with migrator */
 unsigned int current_router_distance = ROUTER_DISTANCE_DEFAULT;
@@ -6467,14 +6464,18 @@ static void update_all_memcg_router_params(unsigned int new_distance)
 /**
  * update_router_based_on_fast_swap_stress - Adjust router threshold dynamically
  *
- * Calculates the router distance threshold by applying utilization-based delta
- * adjustments to the default initialization value (ROUTER_DISTANCE_DEFAULT).
+ * Applies incremental delta adjustments to the current router distance based
+ * on fast swap utilization. Only triggers adjustments when utilization >= 80%.
  *
- * Utilization Strategy:
- *   Low utilization (<50%):  Positive delta - encourage fast swap usage
- *   Medium utilization (50-95%): Progressive tightening
- *   High utilization (95-99%): Use original default
- *   Critical utilization (>99%): Negative delta - preserve space
+ * Utilization Strategy (simplified for convergence):
+ *   Below 80%:       No adjustment - system stable
+ *   80-85%:          +500 - gentle increase
+ *   85-90%:          +100 - minimal increase
+ *   90-95%:          0 - hold steady
+ *   Above 95%:       -100 - gentle decrease to preserve space
+ *
+ * Performance: Uses lock-free WRITE_ONCE on global current_router_distance.
+ * No per-cgroup iteration - router reads global value when needed.
  *
  * Context: Called from kswapd context every 256 cycles
  */
@@ -6501,26 +6502,25 @@ static void update_router_based_on_fast_swap_stress(void)
 
 	/*
 	 * Select delta based on utilization level.
-	 * Use if-else ladder for clear branching and better branch prediction.
+	 * Only adjust when utilization >= 80% for better convergence.
 	 */
-	if (fill_permille < stress_threshold_very_low)
-		delta = router_distance_delta_very_low;
-	else if (fill_permille < stress_threshold_low)
-		delta = router_distance_delta_low;
+	if (fill_permille < stress_threshold_low)
+		return;  /* <80%: no adjustment needed */
 	else if (fill_permille < stress_threshold_medium)
-		delta = router_distance_delta_medium;
+		delta = router_distance_delta_low;  /* 80-85%: +500 */
 	else if (fill_permille < stress_threshold_high)
-		delta = router_distance_delta_high;
+		delta = router_distance_delta_medium;  /* 85-90%: +100 */
 	else if (fill_permille < stress_threshold_very_high)
-		delta = router_distance_delta_very_high;
+		delta = router_distance_delta_high;  /* 90-95%: 0 */
 	else
-		delta = router_distance_delta_critical;
+		delta = router_distance_delta_critical;  /* >95%: -100 */
 
 	/*
-	 * Calculate new threshold with overflow/underflow protection.
-	 * Use signed 64-bit arithmetic to detect overflow.
+	 * Incrementally adjust from current value based on utilization zone.
+	 * If utilization stays in the same zone, continue adjusting by delta.
+	 * This allows continuous adaptation to workload behavior.
 	 */
-	tmp = (long long)ROUTER_DISTANCE_DEFAULT + delta;
+	tmp = (long long)READ_ONCE(current_router_distance) + delta;
 	if (tmp < 0)
 		new_distance = 0;
 	else if (tmp > UINT_MAX)
@@ -6529,13 +6529,16 @@ static void update_router_based_on_fast_swap_stress(void)
 		new_distance = (unsigned int)tmp;
 
 	/*
-	 * Only update if changed to avoid unnecessary cache line bouncing
-	 * and memcg iteration overhead.
+	 * Only update if changed to avoid unnecessary cache line bouncing.
+	 * We use lock-free WRITE_ONCE to update the global parameter.
+	 * Per-cgroup lruvecs can tolerate slightly stale values - router
+	 * should read from current_router_distance directly when needed.
 	 */
 	if (new_distance != READ_ONCE(current_router_distance)) {
 		unsigned int old_distance = READ_ONCE(current_router_distance);
 
-		update_all_memcg_router_params(new_distance);
+		/* Update global tracker - no expensive memcg iteration */
+		WRITE_ONCE(current_router_distance, new_distance);
 
 		/* Log to dedicated file for analysis */
 		log_router_param_change(fill_permille, delta, old_distance, new_distance);

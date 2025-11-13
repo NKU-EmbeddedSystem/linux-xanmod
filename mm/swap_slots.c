@@ -474,8 +474,10 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 		memcg = folio_memcg(folio);
 		if (memcg) {
 			struct mem_cgroup_per_node *pn = memcg->nodeinfo[folio_nid(folio)];
+			/* Read distance threshold from global for low overhead */
 			swap_router_result = swap_router_decision(refault_count, avg_distance,
-								 &pn->lruvec.router_params);
+								 pn->lruvec.router_params.refault_count,
+								 READ_ONCE(current_router_distance));
 		} else {
 			/* No memcg context, use conservative default */
 			swap_router_result = (refault_count > 0) ? 1 : 0;

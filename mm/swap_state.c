@@ -2952,35 +2952,7 @@ static ssize_t current_router_distance_show(struct kobject *kobj,
 	return sysfs_emit(buf, "%u\n", READ_ONCE(current_router_distance));
 }
 
-/* Utilization threshold: very low (default 50%) */
-static ssize_t stress_threshold_very_low_show(struct kobject *kobj,
-					       struct kobj_attribute *attr,
-					       char *buf)
-{
-	extern unsigned int stress_threshold_very_low;
-	return sysfs_emit(buf, "%u\n", READ_ONCE(stress_threshold_very_low));
-}
-
-static ssize_t stress_threshold_very_low_store(struct kobject *kobj,
-					        struct kobj_attribute *attr,
-					        const char *buf, size_t count)
-{
-	extern unsigned int stress_threshold_very_low;
-	unsigned int val;
-	int ret;
-
-	ret = kstrtouint(buf, 10, &val);
-	if (ret)
-		return ret;
-
-	if (val > 1000)
-		return -EINVAL;
-
-	WRITE_ONCE(stress_threshold_very_low, val);
-	return count;
-}
-
-/* Utilization threshold: low (default 75%) */
+/* Utilization threshold: low (default 80%) */
 static ssize_t stress_threshold_low_show(struct kobject *kobj,
 					 struct kobj_attribute *attr,
 					 char *buf)
@@ -3036,7 +3008,7 @@ static ssize_t stress_threshold_medium_store(struct kobject *kobj,
 	return count;
 }
 
-/* Utilization threshold: high (default 95%) */
+/* Utilization threshold: high (default 90%) */
 static ssize_t stress_threshold_high_show(struct kobject *kobj,
 					  struct kobj_attribute *attr,
 					  char *buf)
@@ -3064,7 +3036,7 @@ static ssize_t stress_threshold_high_store(struct kobject *kobj,
 	return count;
 }
 
-/* Utilization threshold: very high (default 99%) */
+/* Utilization threshold: very high (default 95%) */
 static ssize_t stress_threshold_very_high_show(struct kobject *kobj,
 					       struct kobj_attribute *attr,
 					       char *buf)
@@ -3092,32 +3064,7 @@ static ssize_t stress_threshold_very_high_store(struct kobject *kobj,
 	return count;
 }
 
-/* Delta: very low utilization (default +5000) */
-static ssize_t router_distance_delta_very_low_show(struct kobject *kobj,
-						   struct kobj_attribute *attr,
-						   char *buf)
-{
-	extern int router_distance_delta_very_low;
-	return sysfs_emit(buf, "%d\n", READ_ONCE(router_distance_delta_very_low));
-}
-
-static ssize_t router_distance_delta_very_low_store(struct kobject *kobj,
-						    struct kobj_attribute *attr,
-						    const char *buf, size_t count)
-{
-	extern int router_distance_delta_very_low;
-	int val;
-	int ret;
-
-	ret = kstrtoint(buf, 10, &val);
-	if (ret)
-		return ret;
-
-	WRITE_ONCE(router_distance_delta_very_low, val);
-	return count;
-}
-
-/* Delta: low utilization (default +3000) */
+/* Delta: low utilization (default +500) */
 static ssize_t router_distance_delta_low_show(struct kobject *kobj,
 					      struct kobj_attribute *attr,
 					      char *buf)
@@ -3142,7 +3089,7 @@ static ssize_t router_distance_delta_low_store(struct kobject *kobj,
 	return count;
 }
 
-/* Delta: medium utilization (default +1000) */
+/* Delta: medium utilization (default +100) */
 static ssize_t router_distance_delta_medium_show(struct kobject *kobj,
 						 struct kobj_attribute *attr,
 						 char *buf)
@@ -3167,7 +3114,7 @@ static ssize_t router_distance_delta_medium_store(struct kobject *kobj,
 	return count;
 }
 
-/* Delta: high utilization (default +500) */
+/* Delta: high utilization (default 0) */
 static ssize_t router_distance_delta_high_show(struct kobject *kobj,
 					       struct kobj_attribute *attr,
 					       char *buf)
@@ -3192,32 +3139,7 @@ static ssize_t router_distance_delta_high_store(struct kobject *kobj,
 	return count;
 }
 
-/* Delta: very high utilization (default 0) */
-static ssize_t router_distance_delta_very_high_show(struct kobject *kobj,
-						    struct kobj_attribute *attr,
-						    char *buf)
-{
-	extern int router_distance_delta_very_high;
-	return sysfs_emit(buf, "%d\n", READ_ONCE(router_distance_delta_very_high));
-}
-
-static ssize_t router_distance_delta_very_high_store(struct kobject *kobj,
-						     struct kobj_attribute *attr,
-						     const char *buf, size_t count)
-{
-	extern int router_distance_delta_very_high;
-	int val;
-	int ret;
-
-	ret = kstrtoint(buf, 10, &val);
-	if (ret)
-		return ret;
-
-	WRITE_ONCE(router_distance_delta_very_high, val);
-	return count;
-}
-
-/* Delta: critical utilization (default -1000) */
+/* Delta: critical utilization (default -100) */
 static ssize_t router_distance_delta_critical_show(struct kobject *kobj,
 						   struct kobj_attribute *attr,
 						   char *buf)
@@ -3252,8 +3174,6 @@ static struct kobj_attribute router_auto_adjust_attr =
 	__ATTR_RW(router_auto_adjust);
 static struct kobj_attribute current_router_distance_attr =
 	__ATTR_RO(current_router_distance);
-static struct kobj_attribute stress_threshold_very_low_attr =
-	__ATTR_RW(stress_threshold_very_low);
 static struct kobj_attribute stress_threshold_low_attr =
 	__ATTR_RW(stress_threshold_low);
 static struct kobj_attribute stress_threshold_medium_attr =
@@ -3262,16 +3182,12 @@ static struct kobj_attribute stress_threshold_high_attr =
 	__ATTR_RW(stress_threshold_high);
 static struct kobj_attribute stress_threshold_very_high_attr =
 	__ATTR_RW(stress_threshold_very_high);
-static struct kobj_attribute router_distance_delta_very_low_attr =
-	__ATTR_RW(router_distance_delta_very_low);
 static struct kobj_attribute router_distance_delta_low_attr =
 	__ATTR_RW(router_distance_delta_low);
 static struct kobj_attribute router_distance_delta_medium_attr =
 	__ATTR_RW(router_distance_delta_medium);
 static struct kobj_attribute router_distance_delta_high_attr =
 	__ATTR_RW(router_distance_delta_high);
-static struct kobj_attribute router_distance_delta_very_high_attr =
-	__ATTR_RW(router_distance_delta_very_high);
 static struct kobj_attribute router_distance_delta_critical_attr =
 	__ATTR_RW(router_distance_delta_critical);
 #endif /* CONFIG_LRU_GEN_SWAP_ROUTER */
@@ -3282,16 +3198,13 @@ static struct attribute *swap_attrs[] = {
 #ifdef CONFIG_LRU_GEN_SWAP_ROUTER
 	&router_auto_adjust_attr.attr,
 	&current_router_distance_attr.attr,
-	&stress_threshold_very_low_attr.attr,
 	&stress_threshold_low_attr.attr,
 	&stress_threshold_medium_attr.attr,
 	&stress_threshold_high_attr.attr,
 	&stress_threshold_very_high_attr.attr,
-	&router_distance_delta_very_low_attr.attr,
 	&router_distance_delta_low_attr.attr,
 	&router_distance_delta_medium_attr.attr,
 	&router_distance_delta_high_attr.attr,
-	&router_distance_delta_very_high_attr.attr,
 	&router_distance_delta_critical_attr.attr,
 #endif /* CONFIG_LRU_GEN_SWAP_ROUTER */
 	NULL,
