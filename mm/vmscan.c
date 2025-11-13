@@ -6477,9 +6477,9 @@ static void update_all_memcg_router_params(unsigned int new_distance)
  * Performance: Uses lock-free WRITE_ONCE on global current_router_distance.
  * No per-cgroup iteration - router reads global value when needed.
  *
- * Context: Called from kswapd context every 256 cycles
+ * Context: Called from router (swap allocation) when fast allocations reach threshold
  */
-static void update_router_based_on_fast_swap_stress(void)
+void update_router_based_on_fast_swap_stress(void)
 {
 	struct swap_info_struct *si;
 	unsigned int fill_permille;
@@ -6548,6 +6548,7 @@ static void update_router_based_on_fast_swap_stress(void)
 			     delta, old_distance, new_distance);
 	}
 }
+EXPORT_SYMBOL(update_router_based_on_fast_swap_stress);
 
 #endif /* CONFIG_LRU_GEN_SWAP_ROUTER */
 
@@ -6600,14 +6601,6 @@ static void lru_gen_shrink_node(struct pglist_data *pgdat, struct scan_control *
 	if (likely(swap_scan_savior_delays++ < swap_scan_savior_delay_max))
 		goto done;
 	if (current_is_kswapd()) {
-#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
-		/*
-		 * Update router parameters based on current fast swap utilization.
-		 * This happens every 256 kswapd cycles regardless of whether
-		 * migration will run, ensuring parameters stay current.
-		 */
-		update_router_based_on_fast_swap_stress();
-#endif
 		if (swap_scan_savior_enabled && pgdat->prio_lruvec) {
 			swap_scan_savior(sc, pgdat->prio_lruvec);
 		}

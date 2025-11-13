@@ -45,6 +45,37 @@ static DEFINE_MUTEX(swap_slots_cache_mutex);
 /* Serialize swap slots cache enable/disable operations */
 static DEFINE_MUTEX(swap_slots_cache_enable_mutex);
 
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+/*
+ * Router auto-adjustment performance optimization:
+ * - Counts ALL swap slot requests (fast/slow/normal) to measure swap pressure
+ * - Triggers adjustment when requests exceed 1/20 of fast device capacity
+ * - Cache threshold to avoid recalculating si->pages / 20 on every allocation
+ * - Use atomic counter for lock-free operation
+ * - Fast-path overhead: ~5-10 CPU cycles per allocation
+ */
+static atomic_t fast_alloc_counter = ATOMIC_INIT(0);
+static unsigned int fast_alloc_threshold __read_mostly = 0;
+
+/*
+ * update_fast_alloc_threshold - Update cached threshold for router auto-adjustment
+ *
+ * Called when swap configuration changes (swapon/swapoff) to avoid expensive
+ * recalculation on every allocation. Sets threshold to 1/20 of fastest device capacity.
+ */
+static inline void update_fast_alloc_threshold(void)
+{
+	struct swap_info_struct *si = global_fastest_swap_si();
+	unsigned int new_threshold = 0;
+
+	if (si && si->pages > 0)
+		new_threshold = si->pages / 20;
+
+	WRITE_ONCE(fast_alloc_threshold, new_threshold);
+	atomic_set(&fast_alloc_counter, 0);
+}
+#endif
+
 static void __drain_swap_slots_cache(unsigned int type);
 
 #define use_swap_slot_cache (swap_slot_cache_active && swap_slot_cache_enabled)
@@ -88,6 +119,10 @@ void disable_swap_slots_cache_lock(void)
 static void __reenable_swap_slots_cache(void)
 {
 	swap_slot_cache_enabled = has_usable_swap();
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+	/* Update threshold when swap configuration changes */
+	update_fast_alloc_threshold();
+#endif
 }
 
 void reenable_swap_slots_cache_unlock(void)
@@ -563,10 +598,11 @@ repeat_fast:
 			}
 			mutex_unlock(&cache->alloc_lock);
 			if (entry.val){
-				if (cache->prio_fast == get_fastest_swap_prio())
+				if (cache->prio_fast == get_fastest_swap_prio()) {
 					count_memcg_folio_events(folio, SWAPOUT_FAST_ASSIGN_SUCC, 1);
-				else
+				} else {
 					count_memcg_folio_events(folio, SWAPOUT_FAST_ASSIGN_FAIL, 1);
+				}
 				count_memcg_folio_events(folio, SWAPOUT_FAST_ASSIGN_ATT,1);
 				goto out;
 			}
@@ -607,6 +643,23 @@ repeat:
 		count_memcg_folio_events(folio, SWAPOUT_RAW, 1);
  	}
 out:
+#ifdef CONFIG_LRU_GEN_SWAP_ROUTER
+	/*
+	 * Router auto-adjustment: Count ALL swap requests (fast/slow/normal)
+	 * Trigger adjustment when requests exceed 1/20 of fast device capacity
+	 * Optimized hot path: single cached read + atomic inc + compare (~5-10 cycles)
+	 */
+	if (entry.val && likely(router_auto_adjust_enabled)) {
+		unsigned int threshold = READ_ONCE(fast_alloc_threshold);
+		if (likely(threshold > 0)) {
+			unsigned int counter = atomic_inc_return(&fast_alloc_counter);
+			if (unlikely(counter >= threshold)) {
+				update_router_based_on_fast_swap_stress();
+				atomic_set(&fast_alloc_counter, 0);
+			}
+		}
+	}
+#endif
 	if (likely(!skip_charge)){
 		if (mem_cgroup_try_charge_swap(folio, entry)) {
 			put_swap_folio(folio, entry);

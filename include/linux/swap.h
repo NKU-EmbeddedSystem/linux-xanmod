@@ -598,17 +598,15 @@ extern struct swap_info_struct *global_fastest_swap_si(void);
 #ifdef CONFIG_LRU_GEN_SWAP_ROUTER
 extern unsigned int current_router_distance;
 extern bool router_auto_adjust_enabled;
-extern unsigned int stress_threshold_very_low;
 extern unsigned int stress_threshold_low;
 extern unsigned int stress_threshold_medium;
 extern unsigned int stress_threshold_high;
 extern unsigned int stress_threshold_very_high;
-extern int router_distance_delta_very_low;
 extern int router_distance_delta_low;
 extern int router_distance_delta_medium;
 extern int router_distance_delta_high;
-extern int router_distance_delta_very_high;
 extern int router_distance_delta_critical;
+void update_router_based_on_fast_swap_stress(void);
 #endif
 int add_to_scan_slot(swp_entry_t entry);
 unsigned swap_scan_entries_savior(struct address_space *mapping,
