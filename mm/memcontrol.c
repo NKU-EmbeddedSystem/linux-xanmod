@@ -5368,7 +5368,7 @@ int swap_router_decision(int current_refault_count, int current_avg_refault_dist
 void swap_router_params_init(struct swap_router_params *params)
 {
     params->refault_count = 0;
-    params->avg_refault_distance = 20000;
+    params->avg_refault_distance = 50000;
 }
 #endif
 

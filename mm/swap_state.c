@@ -2943,13 +2943,29 @@ static ssize_t router_auto_adjust_store(struct kobject *kobj,
 	return count;
 }
 
-/* Current effective threshold (read-only) */
+/* Current effective threshold (can be set from userspace) */
 static ssize_t current_router_distance_show(struct kobject *kobj,
 					    struct kobj_attribute *attr,
 					    char *buf)
 {
 	extern unsigned int current_router_distance;
 	return sysfs_emit(buf, "%u\n", READ_ONCE(current_router_distance));
+}
+
+static ssize_t current_router_distance_store(struct kobject *kobj,
+					     struct kobj_attribute *attr,
+					     const char *buf, size_t count)
+{
+	extern unsigned int current_router_distance;
+	unsigned int val;
+	int ret;
+
+	ret = kstrtouint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	WRITE_ONCE(current_router_distance, val);
+	return count;
 }
 
 /* Utilization threshold: low (default 80%) */
@@ -2980,7 +2996,7 @@ static ssize_t stress_threshold_low_store(struct kobject *kobj,
 	return count;
 }
 
-/* Utilization threshold: medium (default 85%) */
+/* Utilization threshold: medium (default 90%) */
 static ssize_t stress_threshold_medium_show(struct kobject *kobj,
 					    struct kobj_attribute *attr,
 					    char *buf)
@@ -3008,7 +3024,7 @@ static ssize_t stress_threshold_medium_store(struct kobject *kobj,
 	return count;
 }
 
-/* Utilization threshold: high (default 90%) */
+/* Utilization threshold: high (default 94%) */
 static ssize_t stress_threshold_high_show(struct kobject *kobj,
 					  struct kobj_attribute *attr,
 					  char *buf)
@@ -3036,7 +3052,7 @@ static ssize_t stress_threshold_high_store(struct kobject *kobj,
 	return count;
 }
 
-/* Utilization threshold: very high (default 95%) */
+/* Utilization threshold: very high (default 97%) */
 static ssize_t stress_threshold_very_high_show(struct kobject *kobj,
 					       struct kobj_attribute *attr,
 					       char *buf)
@@ -3064,7 +3080,7 @@ static ssize_t stress_threshold_very_high_store(struct kobject *kobj,
 	return count;
 }
 
-/* Delta: low utilization (default +500) */
+/* Delta: low utilization (default +75) */
 static ssize_t router_distance_delta_low_show(struct kobject *kobj,
 					      struct kobj_attribute *attr,
 					      char *buf)
@@ -3089,7 +3105,7 @@ static ssize_t router_distance_delta_low_store(struct kobject *kobj,
 	return count;
 }
 
-/* Delta: medium utilization (default +100) */
+/* Delta: medium utilization (default +50) */
 static ssize_t router_distance_delta_medium_show(struct kobject *kobj,
 						 struct kobj_attribute *attr,
 						 char *buf)
@@ -3173,7 +3189,7 @@ static struct kobj_attribute swap_scan_enabled_attr = __ATTR_RW(swap_scan_enable
 static struct kobj_attribute router_auto_adjust_attr =
 	__ATTR_RW(router_auto_adjust);
 static struct kobj_attribute current_router_distance_attr =
-	__ATTR_RO(current_router_distance);
+	__ATTR_RW(current_router_distance);
 static struct kobj_attribute stress_threshold_low_attr =
 	__ATTR_RW(stress_threshold_low);
 static struct kobj_attribute stress_threshold_medium_attr =

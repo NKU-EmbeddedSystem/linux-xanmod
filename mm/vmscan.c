@@ -6249,14 +6249,20 @@ static unsigned int swap_scan_savior_enabled = 0;
 unsigned int clever_swap_alloc = 0;
 
 /*
- * Router auto-adjustment system - incremental delta-based tuning
+ * Router auto-adjustment system - incremental delta-based tuning with per-zone multipliers
  *
  * The system dynamically adjusts the router's avg_refault_distance threshold
  * based on fast swap device utilization. Adjustments only trigger when
  * utilization >= 80% to allow system to stabilize and improve convergence.
  *
- * Uses small incremental deltas (+500, +100, 0, -100) applied to current value
- * for gradual adaptation without oscillation. Lock-free updates for low overhead.
+ * Each water level interval has its own multiplier that only increases when
+ * staying continuously within that specific interval:
+ * - 80-90%: accelerates recovery (max 5x: +75→+375)
+ * - 90-94%: continues recovery (max 5x: +50→+250)
+ * - 94-97%: optimal zone, resets all multipliers
+ * - >97%: aggressive backoff (max 10x: -100→-1000)
+ *
+ * Lock-free updates for low overhead. Always logs >= 80% for analysis.
  */
 #ifdef CONFIG_LRU_GEN_SWAP_ROUTER
 
@@ -6268,15 +6274,35 @@ bool router_auto_adjust_enabled __read_mostly = true;
 
 /* Utilization thresholds in permille (parts per 1000) - only trigger above 80% */
 unsigned int stress_threshold_low __read_mostly = 800;		/* 80% */
-unsigned int stress_threshold_medium __read_mostly = 850;	/* 85% */
-unsigned int stress_threshold_high __read_mostly = 900;		/* 90% */
-unsigned int stress_threshold_very_high __read_mostly = 950;	/* 95% */
+unsigned int stress_threshold_medium __read_mostly = 900;	/* 90% */
+unsigned int stress_threshold_high __read_mostly = 940;		/* 94% */
+unsigned int stress_threshold_very_high __read_mostly = 970;	/* 97% */
 
 /* Delta adjustments applied to current threshold - much smaller for convergence */
-int router_distance_delta_low __read_mostly = 50;		/* 80-85%: +50 */
-int router_distance_delta_medium __read_mostly = 10;		/* 85-90%: +10 */
-int router_distance_delta_high __read_mostly = 0;		/* 90-95%: no adjustment */
-int router_distance_delta_critical __read_mostly = -100;	/* >95%: -100 */
+int router_distance_delta_low __read_mostly = 75;		/* 80-90%: +75 */
+int router_distance_delta_medium __read_mostly = 50;		/* 90-94%: +50 */
+int router_distance_delta_high __read_mostly = 0;		/* 94-97%: no adjustment */
+int router_distance_delta_critical __read_mostly = -100;	/* >97%: base reduction */
+
+/*
+ * Per-zone consecutive tracking with capped multipliers:
+ *
+ * Each water level interval has its own multiplier that only increases
+ * when staying continuously within that specific interval.
+ *
+ * 80-90% zone: Multiplier caps at 5 (+75 → +375 max)
+ * 90-94% zone: Multiplier caps at 5 (+50 → +250 max)
+ * 94-97% zone: Optimal, no multiplier (always 0)
+ * >97% zone:   Multiplier caps at 10 (-100 → -1000 max)
+ *
+ * Moving to a different zone resets that zone's specific multiplier.
+ */
+static unsigned int consecutive_80_90_count = 0;
+static unsigned int consecutive_90_95_count = 0;
+static unsigned int consecutive_critical_count = 0;
+
+#define MAX_LOW_MULTIPLIER 5
+#define MAX_CRITICAL_MULTIPLIER 10
 
 /* Current active threshold - shared with migrator */
 unsigned int current_router_distance = ROUTER_DISTANCE_DEFAULT;
@@ -6349,7 +6375,7 @@ static int router_param_log_show(struct seq_file *m, void *v)
 	}
 
 	seq_printf(m, "Total parameter changes: %u\n", router_param_log.count);
-	seq_puts(m, "Timestamp (sec.nsec)        Utilization  Delta     Old       New\n");
+	seq_puts(m, "Timestamp (sec.nsec)  Utilization     Delta    Old       New\n");
 	seq_puts(m, "----------------------------------------------------------------\n");
 
 	/* Calculate starting index for oldest entry */
@@ -6465,14 +6491,23 @@ static void update_all_memcg_router_params(unsigned int new_distance)
  * update_router_based_on_fast_swap_stress - Adjust router threshold dynamically
  *
  * Applies incremental delta adjustments to the current router distance based
- * on fast swap utilization. Only triggers adjustments when utilization >= 80%.
+ * on fast swap utilization. Only triggers when utilization >= 80%.
  *
- * Utilization Strategy (simplified for convergence):
- *   Below 80%:       No adjustment - system stable
- *   80-85%:          +500 - gentle increase
- *   85-90%:          +100 - minimal increase
- *   90-95%:          0 - hold steady
- *   Above 95%:       -100 - gentle decrease to preserve space
+ * Utilization Strategy with Per-Zone Capped Multipliers:
+ *   Below 80%:       No adjustment, no logging - system stable
+ *   80-90%:          Accelerated recovery (zone-specific multiplier, max 5x):
+ *                    +75, +150, +225, +300, +375 (max)
+ *                    Resets if leaving this zone
+ *   90-94%:          Continued recovery (zone-specific multiplier, max 5x):
+ *                    +50, +100, +150, +200, +250 (max)
+ *                    Resets if leaving this zone
+ *   94-97%:          OPTIMAL ZONE - hold steady (0), reset all multipliers
+ *   Above 97%:       CRITICAL - aggressive backoff (zone-specific multiplier, max 10x):
+ *                    -100, -200, -300, ..., -900, -1000 (max)
+ *                    Resets if dropping below 97%
+ *
+ * Logging: Always logs when >= 80% (even when delta=0 in 94-97% range) for
+ * later analysis and visualization of system behavior.
  *
  * Performance: Uses lock-free WRITE_ONCE on global current_router_distance.
  * No per-cgroup iteration - router reads global value when needed.
@@ -6501,19 +6536,46 @@ void update_router_based_on_fast_swap_stress(void)
 	fill_permille = (si->inuse_pages * 1000) / si->pages;
 
 	/*
-	 * Select delta based on utilization level.
-	 * Only adjust when utilization >= 80% for better convergence.
+	 * Select delta based on utilization level with per-zone multipliers.
+	 * Each zone has its own counter that only increments when staying
+	 * continuously within that specific zone.
 	 */
-	if (fill_permille < stress_threshold_low)
-		return;  /* <80%: no adjustment needed */
-	else if (fill_permille < stress_threshold_medium)
-		delta = router_distance_delta_low;  /* 80-85%: +500 */
-	else if (fill_permille < stress_threshold_high)
-		delta = router_distance_delta_medium;  /* 85-90%: +100 */
-	else if (fill_permille < stress_threshold_very_high)
-		delta = router_distance_delta_high;  /* 90-95%: 0 */
-	else
-		delta = router_distance_delta_critical;  /* >95%: -100 */
+	if (fill_permille < stress_threshold_low) {
+		return;  /* <80%: no adjustment, no logging */
+	} else if (fill_permille < stress_threshold_medium) {
+		/* 80-90%: Accelerated recovery - only this zone's multiplier */
+		consecutive_80_90_count++;
+		if (consecutive_80_90_count > MAX_LOW_MULTIPLIER)
+			consecutive_80_90_count = MAX_LOW_MULTIPLIER;
+		delta = router_distance_delta_low * consecutive_80_90_count;
+		/* Reset other zones */
+		consecutive_90_95_count = 0;
+		consecutive_critical_count = 0;
+	} else if (fill_permille < stress_threshold_high) {
+		/* 90-94%: Continued recovery - only this zone's multiplier */
+		consecutive_90_95_count++;
+		if (consecutive_90_95_count > MAX_LOW_MULTIPLIER)
+			consecutive_90_95_count = MAX_LOW_MULTIPLIER;
+		delta = router_distance_delta_medium * consecutive_90_95_count;
+		/* Reset other zones */
+		consecutive_80_90_count = 0;
+		consecutive_critical_count = 0;
+	} else if (fill_permille < stress_threshold_very_high) {
+		/* 94-97%: OPTIMAL ZONE - reset all multipliers */
+		delta = router_distance_delta_high;  /* 0 - no change but log */
+		consecutive_80_90_count = 0;
+		consecutive_90_95_count = 0;
+		consecutive_critical_count = 0;
+	} else {
+		/* >97%: CRITICAL - aggressive backoff - only this zone's multiplier */
+		consecutive_critical_count++;
+		if (consecutive_critical_count > MAX_CRITICAL_MULTIPLIER)
+			consecutive_critical_count = MAX_CRITICAL_MULTIPLIER;
+		delta = router_distance_delta_critical * consecutive_critical_count;
+		/* Reset other zones */
+		consecutive_80_90_count = 0;
+		consecutive_90_95_count = 0;
+	}
 
 	/*
 	 * Incrementally adjust from current value based on utilization zone.
@@ -6529,23 +6591,23 @@ void update_router_based_on_fast_swap_stress(void)
 		new_distance = (unsigned int)tmp;
 
 	/*
-	 * Only update if changed to avoid unnecessary cache line bouncing.
-	 * We use lock-free WRITE_ONCE to update the global parameter.
-	 * Per-cgroup lruvecs can tolerate slightly stale values - router
-	 * should read from current_router_distance directly when needed.
+	 * Always log when >= 80% (even in 94-97% range with delta=0).
+	 * Only update parameter if it actually changes.
 	 */
-	if (new_distance != READ_ONCE(current_router_distance)) {
+	{
 		unsigned int old_distance = READ_ONCE(current_router_distance);
 
-		/* Update global tracker - no expensive memcg iteration */
-		WRITE_ONCE(current_router_distance, new_distance);
-
-		/* Log to dedicated file for analysis */
+		/* Always log for analysis (even when delta=0 in 94-97% range) */
 		log_router_param_change(fill_permille, delta, old_distance, new_distance);
 
-		trace_printk("Fast swap: %u.%u%% full, delta=%+d, old=%u, new=%u\n",
-			     fill_permille / 10, fill_permille % 10,
-			     delta, old_distance, new_distance);
+		/* Only update if changed to avoid unnecessary cache line bouncing */
+		if (new_distance != old_distance) {
+			WRITE_ONCE(current_router_distance, new_distance);
+
+			trace_printk("Fast swap: %u.%u%% full, delta=%+d, old=%u, new=%u\n",
+				     fill_permille / 10, fill_permille % 10,
+				     delta, old_distance, new_distance);
+		}
 	}
 }
 EXPORT_SYMBOL(update_router_based_on_fast_swap_stress);
