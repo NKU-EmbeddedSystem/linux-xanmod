@@ -4244,7 +4244,9 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 				 	*/
 				}
 
-				page = __read_swap_cache_async_save(entry, GFP_HIGHUSER_MOVABLE, vma, 
+				// pr_info("MIGCNT[do_swap_page read]: ori[%lx] entry[%lx] cnt[%d] valid[%d] invalid[%d] - before __read_swap_cache_async_save",
+				// 		orientry.val, entry.val, __swp_swapcount(entry), valid_remap, invalid_remap);
+				page = __read_swap_cache_async_save(entry, GFP_HIGHUSER_MOVABLE, vma,
 							vmf->address, &page_allocated, false, &try_free_entry, false);
 				if (page_allocated){
 					/* MULTISWAP FIX: Reset folio identity for newly allocated page to prevent over-counting */
@@ -4558,12 +4560,20 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	//first is valid_remap && try_to_free
 	if (unlikely(valid_remap || invalid_remap)){
 		if (valid_remap) { //valid remap case
-			if (should_try_to_free_swap(folio, vma, vmf->flags, 1)){//valid	
+			if (should_try_to_free_swap(folio, vma, vmf->flags, 1)){//valid
+				// pr_info("MIGCNT[do_swap_page valid_remap]: folio[%p] ori[%lx] mig[%lx] cnt[%d] - before swap_free",
+				// 	folio, orientry.val, migentry.val, __swp_swapcount(migentry));
 				swap_free(entry);
-				MULTISWAP_MIG_INFO("valid_remap after swap_free folio[%p] pri[%lx] migentry[%lx]cnt[%d] $[%d] ", 
-					folio, folio_swap_entry(folio).val, migentry.val, 
+				// pr_info("MIGCNT[do_swap_page valid_remap]: folio[%p] mig[%lx] cnt[%d] - after swap_free",
+				// 	folio, migentry.val, __swp_swapcount(migentry));
+				MULTISWAP_MIG_INFO("valid_remap after swap_free folio[%p] pri[%lx] migentry[%lx]cnt[%d] $[%d] ",
+					folio, folio_swap_entry(folio).val, migentry.val,
 					__swp_swapcount(migentry), folio_test_swapcache(folio));
+				// pr_info("MIGCNT[do_swap_page valid_remap]: folio[%p] mig[%lx] cnt[%d] - before folio_free_swap",
+				// 	folio, migentry.val, __swp_swapcount(migentry));
 				folio_free_swap(folio);
+				// pr_info("MIGCNT[do_swap_page valid_remap]: folio[%p] mig[%lx] cnt[%d] - after folio_free_swap",
+				// 	folio, migentry.val, __swp_swapcount(migentry));
 				delete_from_swap_remap(folio, orientry, migentry, false);
 				MULTISWAP_MIG_INFO("do_swap valid after folio_free_swap[%p]->pri[%lx]ref[%d]entry[%lx]cnt[%d] migentry[%lx] sb[%d]$[%d] wb[%d]", 
 					folio, folio_swap_entry(folio).val, folio_ref_count(folio),

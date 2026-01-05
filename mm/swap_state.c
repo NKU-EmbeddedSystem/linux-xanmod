@@ -2595,10 +2595,35 @@ skip_ra_try_save:
 			// 	pr_err("fail dup mig_entry[%lx]", mig_entry.val);
 			// 	goto fail_page_out;
 			// }
-			VM_BUG_ON_FOLIO(swap_duplicate(mig_entry) < 0, folio);
+			/*
+			 * MULTISWAP FIX: swap_duplicate can silently fail (returns 0 even when
+			 * __swap_duplicate returns -EINVAL/-ENOENT due to get_swap_device failing
+			 * or percpu_ref contention). For migration entries, verify the count was
+			 * incremented and retry only if needed to minimize overhead.
+			 */
+			swap_duplicate(mig_entry);
+			if (unlikely(__swp_swapcount(mig_entry) == 0)) {
+				/* Rare path: first attempt failed, add barriers and retry */
+				int retry_count = 0;
+				const int max_retries = 5;
+
+				do {
+					smp_mb();
+					cpu_relax();
+					swap_duplicate(mig_entry);
+					retry_count++;
+				} while (__swp_swapcount(mig_entry) == 0 && retry_count < max_retries);
+
+				if (__swp_swapcount(mig_entry) == 0) {
+					pr_err("MULTISWAP: swap_duplicate failed after %d retries for mig_entry[%lx]",
+						max_retries, mig_entry.val);
+					put_swap_folio(folio, mig_entry);
+					goto fail_page_out;
+				}
+			}
 
 			MULTISWAP_MIG_INFO("folio_alloc_swap entry[%lx] v[%d] for folio[%p]ref[%d]cnt[%d]",
-				mig_entry.val, swp_entry_test_special(mig_entry), 
+				mig_entry.val, swp_entry_test_special(mig_entry),
 				folio, folio_ref_count(folio), __swap_count(mig_entry));
 
 			/* MULTISWAP:
@@ -2642,8 +2667,10 @@ skip_ra_try_save:
 				folio_unlock(folio);
 				goto fail_delete_saved_cache;
 			}
-			MULTISWAP_MIG_INFO("folio[%p] mig[%lx]cnt[%d] ref[%d] add_to_sw$_sc success ", 
+			MULTISWAP_MIG_INFO("folio[%p] mig[%lx]cnt[%d] ref[%d] add_to_sw$_sc success ",
 				folio, mig_entry.val, __swp_swapcount(mig_entry), folio_ref_count(folio));
+			// pr_info("MIGCNT[mig_setup_cache]: folio[%p] mig[%lx] cnt[%d] - after add_to_swap_cache_save_check",
+			// 	folio, mig_entry.val, __swp_swapcount(mig_entry));
 			//first mark entry as faked for now (currently under initialization)
 			swp_entry_set_unready(&mig_entry);
 			//adding a remap from saved_entry -> mig_entry
@@ -2655,6 +2682,8 @@ skip_ra_try_save:
 				// folio_unlock(folio);
 				goto fail_delete_mig_cache;
 			}
+			// pr_info("MIGCNT[mig_setup_remap]: folio[%p] mig[%lx] cnt[%d] - after add_swp_entry_remap",
+			// 	folio, mig_entry.val, __swp_swapcount(mig_entry));
 			if (unlikely(!__swp_swapcount(saved_entry))){
 				MULTISWAP_MIG_ERR("[rare] folio[%p] __swp_swapcount fail", folio);
 				swp_entry_t __mig_entry;
@@ -2825,6 +2854,8 @@ skip_this_save:
 				// VM_WARN_ON_FOLIO(!folio_test_writeback(folio), folio);
 				MULTISWAP_MIG_INFO("folio[%p] => saved_folios ref[%d]", folio, folio_ref_count(folio));
 				// VM_WARN_ON_FOLIO(folio_ref_count(folio) != 3, folio);
+				// pr_info("MIGCNT[mig_add_saved]: folio[%p] pri[%lx] - adding to saved_folios",
+				// 	folio, folio_swap_entry(folio).val);
 				list_add(&folio->lru, &lrugen->saved_folios);
 				trace_add_to_lruvec_saved_folios(lruvec, folio, num_moved);	
 			}
@@ -2965,6 +2996,31 @@ static ssize_t current_router_distance_store(struct kobject *kobj,
 		return ret;
 
 	WRITE_ONCE(current_router_distance, val);
+	return count;
+}
+
+/* Separate migrator threshold (independent from router) */
+static ssize_t current_migrator_distance_show(struct kobject *kobj,
+					      struct kobj_attribute *attr,
+					      char *buf)
+{
+	extern unsigned int current_migrator_distance;
+	return sysfs_emit(buf, "%u\n", READ_ONCE(current_migrator_distance));
+}
+
+static ssize_t current_migrator_distance_store(struct kobject *kobj,
+					       struct kobj_attribute *attr,
+					       const char *buf, size_t count)
+{
+	extern unsigned int current_migrator_distance;
+	unsigned int val;
+	int ret;
+
+	ret = kstrtouint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	WRITE_ONCE(current_migrator_distance, val);
 	return count;
 }
 
@@ -3190,6 +3246,8 @@ static struct kobj_attribute router_auto_adjust_attr =
 	__ATTR_RW(router_auto_adjust);
 static struct kobj_attribute current_router_distance_attr =
 	__ATTR_RW(current_router_distance);
+static struct kobj_attribute current_migrator_distance_attr =
+	__ATTR_RW(current_migrator_distance);
 static struct kobj_attribute stress_threshold_low_attr =
 	__ATTR_RW(stress_threshold_low);
 static struct kobj_attribute stress_threshold_medium_attr =
@@ -3214,6 +3272,7 @@ static struct attribute *swap_attrs[] = {
 #ifdef CONFIG_LRU_GEN_SWAP_ROUTER
 	&router_auto_adjust_attr.attr,
 	&current_router_distance_attr.attr,
+	&current_migrator_distance_attr.attr,
 	&stress_threshold_low_attr.attr,
 	&stress_threshold_medium_attr.attr,
 	&stress_threshold_high_attr.attr,

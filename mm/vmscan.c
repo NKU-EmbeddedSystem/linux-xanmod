@@ -1609,7 +1609,11 @@ static int __remove_mapping(struct address_space *mapping, struct folio *folio,
 					folio->shadow_ext = NULL;
 					BUG();
 				}
+				// pr_info("MIGCNT[__remove_mapping]: folio[%p] mig[%lx] cnt[%d] - before put_swap_folio",
+				// 	folio, mig_entry_phy.val, __swp_swapcount(mig_entry_phy));
 				put_swap_folio(folio, mig_entry_phy);
+				// pr_info("MIGCNT[__remove_mapping]: folio[%p] mig[%lx] cnt[%d] - after put_swap_folio",
+				// 	folio, mig_entry_phy.val, __swp_swapcount(mig_entry_phy));
 				MULTISWAP_MIG_INFO("after clear folio[%p]ref[%d] zone[%p] private[%lx]found mig_entry[%lx] count %d",
 							folio, folio_ref_count(folio),  page_zone(folio_page(folio, 0)),
 							folio_swap_entry(folio).val, mig_entry_phy.val, __swp_swapcount(mig_entry_phy));
@@ -2117,6 +2121,8 @@ pass_cleanup:
 
 			/* MULTISWAP: Enable reamp from original entry to migentry */
 			ret = enable_swp_entry_remap(folio, entry, &migentry);
+			// pr_info("MIGCNT[check_enable_remap]: folio[%p] ori[%lx] mig[%lx] cnt[%d] - after enable_swp_entry_remap ret=%d",
+			// 	folio, entry.val, migentry.val, __swp_swapcount(migentry), ret);
 			if (ret){
 				if (ret == 1){
 					pr_info("folio[%p] enable_swp_entry_remap fail[%d] migentry[%lx]", folio, ret, migentry.val);
@@ -2128,11 +2134,15 @@ pass_cleanup:
 				}
 				BUG();
 			}
-			//realloc entry 
+			//realloc entry
 			VM_BUG_ON(!migentry.val);
-			
+
 			set_page_private(folio_page(folio, 0), migentry.val);
+			// pr_info("MIGCNT[check_saved_folios_wb]: folio[%p] ori[%lx] mig[%lx] cnt[%d] - before delete_from_swap_cache_mig(dec_count=true)",
+			// 	folio, entry.val, migentry.val, __swp_swapcount(migentry));
 			delete_from_swap_cache_mig(folio, migentry, true, true); //delete from origin entry
+			// pr_info("MIGCNT[check_saved_folios_wb]: folio[%p] mig[%lx] cnt[%d] - after delete_from_swap_cache_mig",
+			// 	folio, migentry.val, __swp_swapcount(migentry));
 			folio_ref_sub(folio, folio_nr_pages(folio));
 			VM_BUG_ON_FOLIO(__swp_swapcount(entry) != 1, folio);
 
@@ -6304,9 +6314,13 @@ static unsigned int consecutive_critical_count = 0;
 #define MAX_LOW_MULTIPLIER 5
 #define MAX_CRITICAL_MULTIPLIER 10
 
-/* Current active threshold - shared with migrator */
+/* Current active threshold - used by router for allocation decisions */
 unsigned int current_router_distance = ROUTER_DISTANCE_DEFAULT;
 EXPORT_SYMBOL(current_router_distance);
+
+/* Separate threshold for migrator - controls which pages get migrated */
+unsigned int current_migrator_distance = ROUTER_DISTANCE_DEFAULT;
+EXPORT_SYMBOL(current_migrator_distance);
 
 /* Parameter change log - ring buffer for tracking adjustments */
 #define ROUTER_PARAM_LOG_SIZE (1024 * 1024)  /* 1M entries, ~29MB */

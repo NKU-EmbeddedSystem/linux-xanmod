@@ -1609,8 +1609,12 @@ struct swap_info_struct *get_swap_device(swp_entry_t entry)
 	si = swp_swap_info(entry);
 	if (!si)
 		goto bad_nofile;
-	if (!percpu_ref_tryget_live(&si->users))
+	if (!percpu_ref_tryget_live(&si->users)) {
+		// /* Debug: log when percpu_ref_tryget_live fails */
+		// pr_info("MIGCNT[get_swap_device]: entry[%lx] type[%d] percpu_ref_tryget_live FAILED",
+		// 	entry.val, swp_type(entry));
 		goto out;
+	}
 	/*
 	 * Guarantee the si->users are checked before accessing other
 	 * fields of swap_info_struct.
@@ -1871,6 +1875,10 @@ int __swp_swapcount(swp_entry_t entry)
 		count = swap_swapcount(si, entry);
 		put_swap_device(si);
 	}
+	// else {
+	// 	/* Debug: log when get_swap_device fails in __swp_swapcount */
+	// 	pr_info("MIGCNT[__swp_swapcount]: entry[%lx] get_swap_device FAILED, returning 0", entry.val);
+	// }
 	return count;
 }
 
@@ -2601,11 +2609,12 @@ void swap_shadow_scan_next(struct swap_info_struct *si, struct lruvec *lruvec,
 
 #ifdef CONFIG_LRU_GEN_SWAP_ROUTER
 	/*
-	 * Use the same distance threshold as the router.
-	 * This ensures migration and allocation decisions are consistent.
+	 * Use separate migrator threshold for migration decisions.
+	 * This allows independent tuning of migration vs allocation policies.
 	 * READ_ONCE prevents compiler from reloading the value.
 	 */
-	threshold = READ_ONCE(current_router_distance);
+	extern unsigned int current_migrator_distance;
+	threshold = READ_ONCE(current_migrator_distance);
 #else
 	threshold = SEQ_DIFF_THRESHOLD;
 #endif
@@ -2623,7 +2632,7 @@ void swap_shadow_scan_next(struct swap_info_struct *si, struct lruvec *lruvec,
 		mapping = swap_address_space(entry);
 		found = swap_scan_entries_savior(mapping, lruvec, start, end, type, v, threshold, &fullstop);
 		*scanned += found;
-		pr_info("swap_scan_entries_savior scanned[%d],v[%d] [%u-%u]", found, v, start, end);
+		// pr_info("swap_scan_entries_savior scanned[%d],v[%d] [%u-%u]", found, v, start, end);
 	}
 #ifdef CONFIG_LRU_GEN_STALE_SWP_ENTRY_SAVIOR_DEBUG
 	if (*scanned)
@@ -3976,8 +3985,10 @@ static int __swap_duplicate(swp_entry_t entry, unsigned char usage)
 	int err;
 
 	p = get_swap_device(entry);
-	if (!p)
+	if (!p) {
+		// pr_info("MIGCNT[__swap_duplicate]: entry[%lx] get_swap_device FAILED - returning -EINVAL", entry.val);
 		return -EINVAL;
+	}
 
 	offset = swp_raw_offset(entry); //use raw
 	version = swp_entry_test_special(entry);
@@ -3985,6 +3996,12 @@ static int __swap_duplicate(swp_entry_t entry, unsigned char usage)
 	ci = lock_cluster_or_swap_info(p, offset);
 
 	count = p->swap_map[offset_v];
+
+	// /* Debug: trace swap_duplicate for slow device entries (migration targets) */
+	// if (usage == 1 && !__si_can_version(p)) {
+	// 	pr_info("MIGCNT[__swap_duplicate]: entry[%lx] offset[%lx] offset_v[%lx] swap_map_raw[%x] version[%lu] fast[%d]",
+	// 		entry.val, offset, offset_v, count, version, __si_can_version(p));
+	// }
 
 	/*
 	 * swapin_readahead() doesn't check if a swap entry is valid, so the
@@ -4022,8 +4039,19 @@ static int __swap_duplicate(swp_entry_t entry, unsigned char usage)
 		}
 		else
 			err = -ENOMEM;
+
+		// /* Debug: count was incremented - only log for slow device */
+		// if (usage == 1 && !err && !__si_can_version(p)) {
+		// 	pr_info("MIGCNT[__swap_duplicate]: entry[%lx] INCREMENTED count to[%x] has_cache[%x] final[%x] fast[%d]",
+		// 		entry.val, count, has_cache, count | has_cache, __si_can_version(p));
+		// }
 	} else
 		err = -ENOENT;			/* unused swap entry */
+		// /* Debug: unused swap entry path - only log for slow device */
+		// if (usage == 1 && !__si_can_version(p)) {
+		// 	pr_info("MIGCNT[__swap_duplicate]: entry[%lx] ENOENT - unused swap entry (count=0, has_cache=0) fast[%d]",
+		// 		entry.val, __si_can_version(p));
+		// }
 
 	WRITE_ONCE(p->swap_map[offset_v], count | has_cache);
 	if 	(unlikely(__si_can_version(p) && version > 1)) {
