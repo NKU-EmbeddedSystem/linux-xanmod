@@ -6243,6 +6243,7 @@ static void swap_scan_savior(struct scan_control *sc, struct lruvec * lruvec)
 {
 	struct swap_info_struct * si;
 	unsigned long nr_entry_saved, nr_entry_scanned;
+
 	VM_BUG_ON(!current_is_kswapd());
 	nr_entry_scanned = nr_entry_saved = 0;
 	si = global_fastest_swap_si();
@@ -6285,8 +6286,8 @@ bool router_auto_adjust_enabled __read_mostly = true;
 /* Utilization thresholds in permille (parts per 1000) - only trigger above 80% */
 unsigned int stress_threshold_low __read_mostly = 800;		/* 80% */
 unsigned int stress_threshold_medium __read_mostly = 900;	/* 90% */
-unsigned int stress_threshold_high __read_mostly = 940;		/* 94% */
-unsigned int stress_threshold_very_high __read_mostly = 970;	/* 97% */
+unsigned int stress_threshold_high __read_mostly = 970;		/* 97% */
+unsigned int stress_threshold_very_high __read_mostly = 990;	/* 99% */
 
 /* Delta adjustments applied to current threshold - much smaller for convergence */
 int router_distance_delta_low __read_mostly = 75;		/* 80-90%: +75 */

@@ -19,7 +19,7 @@
  * If scanning batch hasn't fill up, scan will
  * be triggered again at next kswapd awake.
  */
-#define SWAP_SLOTS_SCAN_MIN            SWAP_SCAN_SLOT_SIZE * 16
+#define SWAP_SLOTS_SCAN_MIN            (SWAP_SCAN_SLOT_SIZE * 16)
 
 /*
  * SWAP_SLOTS_SCAN_SAVE_ONCE
