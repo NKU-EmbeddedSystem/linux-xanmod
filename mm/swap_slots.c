@@ -35,6 +35,7 @@
 #include <linux/mutex.h>
 #include <linux/mm.h>
 #include <linux/memcontrol.h>
+#include <linux/pagepilot_overhead.h>
 #include <trace/events/lru_gen.h>
 
 static DEFINE_PER_CPU(struct swap_slots_cache, swp_slots);
@@ -467,6 +468,7 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 	int swap_router_result;
 	long fast_left;
 	struct shadow_entry* shadow_ext;
+	PP_OH_DECL(rtr);
 	/*DJL ADD END*/
 	
 	entry.val = 0;
@@ -510,9 +512,11 @@ swp_entry_t folio_alloc_swap(struct folio *folio, long* left_space, bool force_s
 		if (memcg) {
 			struct mem_cgroup_per_node *pn = memcg->nodeinfo[folio_nid(folio)];
 			/* Read distance threshold from global for low overhead */
+			PP_OH_BEGIN(PP_OH_ROUTER_DECISION, rtr);
 			swap_router_result = swap_router_decision(refault_count, avg_distance,
 								 pn->lruvec.router_params.refault_count,
 								 READ_ONCE(current_router_distance));
+			PP_OH_END(PP_OH_ROUTER_DECISION, rtr);
 		} else {
 			/* No memcg context, use conservative default */
 			swap_router_result = (refault_count > 0) ? 1 : 0;

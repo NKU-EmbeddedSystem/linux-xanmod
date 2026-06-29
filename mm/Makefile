@@ -73,6 +73,7 @@ ifdef CONFIG_MMU
 endif
 
 obj-$(CONFIG_SWAP)	+= page_io.o swap_state.o swapfile.o swap_slots.o swap_scan_slot.o
+obj-$(CONFIG_PAGEPILOT_OVERHEAD_STAT)	+= pagepilot_overhead.o
 obj-$(CONFIG_FRONTSWAP)	+= frontswap.o
 obj-$(CONFIG_ZSWAP)	+= zswap.o
 obj-$(CONFIG_HAS_DMA)	+= dmapool.o

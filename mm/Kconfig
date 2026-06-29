@@ -1253,6 +1253,17 @@ config LRU_GEN_SWAP_IN_LOCK_STAT
 	help
 	  This option enables swap in locking time record.
 
+config PAGEPILOT_OVERHEAD_STAT
+	bool "PagePilot: sample added-path overhead (ns)"
+	depends on LRU_GEN_SWAP_ROUTER
+	help
+	  Sampled ktime instrumentation around PagePilot's newly-added code
+	  segments (indirect swap-entry lookup/unlock on the page-fault path,
+	  and the offloading router decision).  Per-site average latency is
+	  exposed at /sys/kernel/debug/pagepilot_overhead.  For overhead
+	  measurement only; keep disabled for production / paper performance
+	  numbers.
+
 config LRU_GEN_STALE_SWP_ENTRY_SAVIOR
 	bool "scan & free stale fast swap entries"
 	depends on LRU_GEN_KEEP_REFAULT_HISTORY

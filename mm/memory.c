@@ -93,6 +93,7 @@
 /*DJL ADD BEGIN*/
 #include <trace/events/swap.h>
 #include <trace/events/lru_gen.h>
+#include <linux/pagepilot_overhead.h>
 /*DJL ADD END*/
 
 #if defined(LAST_CPUPID_NOT_IN_PAGE_FLAGS) && !defined(CONFIG_COMPILE_TEST)
@@ -3862,6 +3863,9 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	struct address_space *address_space;
 	bool need_unlock= false, valid_remap = false, invalid_remap = false, filemaphit = false;
 	static int privatebug = 1000;
+	PP_OH_DECL(mlk);
+	PP_OH_DECL(mun1);
+	PP_OH_DECL(mun2);
 #ifdef CONFIG_LRU_GEN_SWAP_IN_LOCK_STAT
 	/*
 	 * Used for tats swapin page locked periods. 
@@ -4038,9 +4042,11 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	orientry.val = entry.val; //save origin
 #ifdef CONFIG_LRU_GEN_STALE_SWP_ENTRY_SAVIOR
 	/* return a NULL or migentry (might be unready), lock the remap */
-	if (__si_can_version(si))
+	if (__si_can_version(si)) {
+		PP_OH_BEGIN(PP_OH_MIGENTRY_LOCK, mlk);
 		migentry = entry_get_migentry_lock(entry);
-	else
+		PP_OH_END(PP_OH_MIGENTRY_LOCK, mlk);
+	} else
 		migentry.val = 0;
 	if (unlikely(migentry.val)) {
 		if (swp_entry_test_locked(&migentry))
@@ -4651,9 +4657,11 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	// 		__swp_swapcount(entry), folio_test_writeback(folio));
 	// }
 
-	if (unlikely(migentry.val && need_unlock)){ 
+	if (unlikely(migentry.val && need_unlock)){
+		PP_OH_BEGIN(PP_OH_MIGENTRY_UNLOCK, mun1);
 		entry_get_migentry_unlock(orientry, migentry);
-		MULTISWAP_MIG_INFO("do_swap unlock reamp ori[%lx]cnt[%d]->mig[%lx]cnt[%d] folio[%p]ref[%d]pri[%lx]a[%d]d[%d]lru[%d]", 
+		PP_OH_END(PP_OH_MIGENTRY_UNLOCK, mun1);
+		MULTISWAP_MIG_INFO("do_swap unlock reamp ori[%lx]cnt[%d]->mig[%lx]cnt[%d] folio[%p]ref[%d]pri[%lx]a[%d]d[%d]lru[%d]",
 			orientry.val, __swp_swapcount(orientry),migentry.val, __swp_swapcount(migentry), 
 			folio, folio_ref_count(folio), folio_swap_entry(folio).val, 
 			folio_test_active(folio), folio_test_dirty(folio), folio_test_lru(folio));
@@ -4754,8 +4762,10 @@ out_release:
 	}
 	if (si)
 		put_swap_device(si);
-	if (migentry.val && need_unlock){ 
+	if (migentry.val && need_unlock){
+		PP_OH_BEGIN(PP_OH_MIGENTRY_UNLOCK, mun2);
 		entry_get_migentry_unlock(orientry, migentry);
+		PP_OH_END(PP_OH_MIGENTRY_UNLOCK, mun2);
 		folio_get(folio);
 // #ifdef CONFIG_LRU_GEN_STALE_SWP_ENTRY_SAVIOR_DEBUG
 // 		pr_info("retry do_swap unlock reamp ori[%lx]cnt[%d]->mig[%lx]cnt[%d]", 
