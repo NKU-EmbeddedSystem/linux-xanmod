@@ -2036,11 +2036,23 @@ collect_fail_lock_keep:
 		folio_check_dirty_writeback(folio, &dirty, &writeback);
 		
 		if (folio_test_writeback(folio)) {
-			if (!folio_test_stalesaved(folio)){ //cancelled by do_swap
-				pr_info("folio[%p] taken by do_swap, don't touch it", folio);
-				folio_unlock(folio);
-				// BUG();
-				continue;
+			if (!folio_test_stalesaved(folio)){ //cancelled by do_swap (PF2)
+				/*
+				 * PagePilot fix: do_swap_page's PF2 branch interrupts this
+				 * migration (clears stalesaved, resets page_private to the
+				 * FAST origin) but CANNOT tear down the SLOW mig cache idx /
+				 * mig slot / remap while the folio is under writeback -- it
+				 * delegates that to our wb-complete interrupted branch
+				 * (delete_from_swap_remap_get_mig -> delete_from_swap_cache_mig
+				 * (migentry) -> swap_free_mig). The old "continue" dropped the
+				 * folio from saved_folios so that branch NEVER ran, leaving a
+				 * dangling pointer at the SLOW mig idx until the mig slot was
+				 * freed at process exit (free_swap_and_cache) -> crash. Keep it
+				 * and recheck after writeback completes (it then reaches the
+				 * interrupted branch and tears the mig side down exactly once).
+				 */
+				pr_info("folio[%p] taken by do_swap (PF2), recheck after wb", folio);
+				goto keep_next_time_locked;
 			}
 			goto keep_next_time_locked;
 		}
@@ -2097,9 +2109,19 @@ keep_next_time:
 					swap_free_mig(migentry);					
 				}
 
-				if ((err = swapcache_prepare(folio_swap_entry(folio)))) {
-					pr_err("folio orientry[%lx] reprepare fail [%d] [%d]", 
-							folio_swap_entry(folio).val, err, -EEXIST);
+				err = swapcache_prepare(folio_swap_entry(folio));
+				/*
+				 * PagePilot: do_swap_page may have already taken ownership of
+				 * this interrupted migration's origin slot -- it always frees
+				 * the origin PTE ref, and in its teardown branch also frees the
+				 * origin swapcache entry + remap + migentry. So re-preparing the
+				 * origin here legitimately races and returns -EEXIST (do_swap
+				 * kept it in swapcache) or -ENOENT (do_swap already freed it).
+				 * Both are expected; only an unexpected error is a real bug.
+				 */
+				if (err && err != -EEXIST && err != -ENOENT) {
+					pr_err("folio orientry[%lx] reprepare fail [%d]",
+							folio_swap_entry(folio).val, err);
 					BUG();
 				}
 				MULTISWAP_MIG_INFO("folio[%p]stale[%d] ref[%d]pri[%lx] entry[%lx]cnt[%d]mig[%lx]cnt[%d] cleanned mig", 
@@ -2115,7 +2137,14 @@ pass_cleanup:
 			/* MULTISWAP: No interruption, try to enable the remap */
 			
 			/* MULTISWAP: delete from origin entry */
-			delete_from_swap_cache_mig(folio, entry, false, false); 
+			/*
+			 * PagePilot fix: dec_count=true so put_swap_folio(origin) drops
+			 * the SWAP_HAS_CACHE pin taken in mig_setup_cache, exactly as the
+			 * folio leaves the fast cache here. The PTE count ref is still
+			 * consumed below by swap_free(entry); after both, origin reaches
+			 * usage 0 and is freed exactly once -- never while still cached.
+			 */
+			delete_from_swap_cache_mig(folio, entry, true, false);
 			MULTISWAP_MIG_INFO("folio[%p]->ext[%p] delete_from_swap_cache_mig ref[%d] origin[%lx]cnt[%d]", 
 				folio, folio->shadow_ext, folio_ref_count(folio), entry.val, __swp_swapcount(entry));
 

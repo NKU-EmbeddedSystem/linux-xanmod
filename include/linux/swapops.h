@@ -199,6 +199,21 @@ static inline pgoff_t swp_raw_offset(swp_entry_t entry)
 {
 	return entry.val & SWP_OFFSET_MASK;
 }
+/*
+ * Index of a swap entry within the swap CACHE (swapper_spaces xarray).
+ * Must depend only on (raw_offset, version) -- never on the transient ext
+ * markers (0x1 unready / 0x2 locked / 0x4 mig-freed). swap_address_space()
+ * already selects the per-block address_space using raw_offset+version with
+ * NO ext bits; the in-block xarray index must match, otherwise the same
+ * physical slot aliases to different xarray indices for different ext values
+ * (folio inserted at ext=0 but torn down via ext=0x4 -> orphaned folio ->
+ * slot reuse stomp -> kernel BUG mm/swap_state.c:881). Keep SPECIAL(version),
+ * strip EXT.
+ */
+static inline pgoff_t swp_cache_index(swp_entry_t entry)
+{
+	return swp_offset(entry) & ~SWP_EXT_MASK;
+}
 // /*
 //  * Extract the ext + `offset' field from a swp_entry_t.  The swp_entry_t is in
 //  * arch-independent format

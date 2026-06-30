@@ -3588,14 +3588,25 @@ void free_unref_page_list(struct list_head *list)
 		shadow = folio_remove_shadow_entry(folio);
 		if (shadow){
 			if (unlikely(entry_is_entry_ext_debug(shadow) == 1)){
-				shadow_entry_free(shadow);
-				// trace_shadow_entry_free(shadow, 4);	
+				/*
+				 * PagePilot fix: free XOR store, never both. The old code
+				 * freed `shadow` here and then handed the SAME (now dangling)
+				 * pointer to __delete_from_swap_cache() below, which derefs it
+				 * and xas_store()s it into the swap-cache slot -> use-after-free
+				 * that later surfaces as a foreign object in the slot
+				 * (kernel BUG at mm/swap_state.c:881) during reclaim. The free
+				 * now lives in the else branch (see below).
+				 */
+				// trace_shadow_entry_free(shadow, 4);
 				// pr_info("[FREE]free_unref_list normal shadow[%p]folio[%p]pri[%lx]ref[%d]$[%d]priolow[%d]",
 				// 		shadow, folio, folio_swap_entry(folio).val, 
 				// 		folio_ref_count(folio), folio_test_swapcache(folio), folio_test_swappriolow(folio));
 				if (folio_test_swapcache(folio) && folio_swap_entry(folio).val != 0){
+					/* still cached: the xarray takes ownership of `shadow` (refault record) */
 					__delete_from_swap_cache(folio, folio_swap_entry(folio), shadow);
-					pr_info("folio[%p] delete from swapcache", folio);
+				} else {
+					/* not stored anywhere: free it */
+					shadow_entry_free(shadow);
 				}
 			}
 			else if (unlikely(entry_is_entry_ext(shadow) < 1)){

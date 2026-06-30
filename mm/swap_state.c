@@ -94,7 +94,7 @@ void show_swap_cache_info(void)
 void *get_shadow_from_swap_cache(swp_entry_t entry)
 {
 	struct address_space *address_space = swap_address_space(entry);
-	pgoff_t idx = swp_offset(entry);
+	pgoff_t idx = swp_cache_index(entry);
 	struct page *page;
 
 	page = xa_load(&address_space->i_pages, idx);
@@ -113,7 +113,7 @@ void *get_shadow_from_swap_cache(swp_entry_t entry)
 void *get_shadow_from_swap_cache_erase(swp_entry_t entry)
 {
 	struct address_space *address_space = swap_address_space(entry);
-	pgoff_t idx = swp_offset(entry);
+	pgoff_t idx = swp_cache_index(entry);
 	XA_STATE_ORDER(xas, &address_space->i_pages, idx, 0);
 	unsigned long i;
 	int entry_state = 0;
@@ -191,7 +191,7 @@ int add_to_swap_cache(struct folio *folio, swp_entry_t entry,
 			gfp_t gfp, void **shadowp)
 {
 	struct address_space *address_space = swap_address_space(entry);
-	pgoff_t idx = swp_offset(entry);
+	pgoff_t idx = swp_cache_index(entry);
 	XA_STATE_ORDER(xas, &address_space->i_pages, idx, folio_order(folio));
 	unsigned long i, nr = folio_nr_pages(folio);
 	int entry_state = 0;
@@ -394,11 +394,11 @@ int enable_swp_entry_remap(struct folio* folio, swp_entry_t from_entry, swp_entr
 				}
 				else{
 					xas_store(&xas, xa_mk_value(to_entry_enabled.val + i));
-					MULTISWAP_MIG_INFO("enable_remap succ, folio[%p]ref[%d] $[%d] entry[%lx]->entry[%lx] ", 
-						folio, folio_ref_count(folio), folio_test_swapcache(folio), 
+					MULTISWAP_MIG_INFO("enable_remap succ, folio[%p]ref[%d] $[%d] entry[%lx]->entry[%lx] ",
+						folio, folio_ref_count(folio), folio_test_swapcache(folio),
 						from_entry.val, to_entry_enabled.val);
 					if (unlikely(!folio_test_uptodate(folio)))
-						BUG();		
+						BUG();
 				}
 			}
 			else{
@@ -478,7 +478,7 @@ static int add_to_swap_cache_save_check(struct folio *folio, swp_entry_t entry,
 			gfp_t gfp, bool saved)
 {
 	struct address_space *address_space = swap_address_space(entry);
-	pgoff_t idx = swp_offset(entry);
+	pgoff_t idx = swp_cache_index(entry);
 	void* _entry;
 	unsigned long message;
 
@@ -571,7 +571,7 @@ static int add_to_swap_cache_save(struct folio *folio, swp_entry_t entry,
 			gfp_t gfp)
 {
 	struct address_space *address_space = swap_address_space(entry);
-	pgoff_t idx = swp_offset(entry);
+	pgoff_t idx = swp_cache_index(entry);
 	void* _entry;
 	if (swp_entry_test_ext(entry)){
 		pr_err("add_to_swap_cache_save can't deal ext entry[%lx]", entry.val);
@@ -847,7 +847,7 @@ void __delete_from_swap_cache(struct folio *folio,
 	struct address_space *address_space = swap_address_space(entry);
 	int i;
 	long nr = folio_nr_pages(folio);
-	pgoff_t idx = swp_offset(entry);
+	pgoff_t idx = swp_cache_index(entry);
 	XA_STATE(xas, &address_space->i_pages, idx);
 
 	xas_set_update(&xas, workingset_update_node);
@@ -922,7 +922,7 @@ void __delete_from_swap_cache_mig(struct folio *folio,
 	long nr = folio_nr_pages(folio);
 	void *shadow = NULL;
 
-	idx = swp_offset(entry);	
+	idx = swp_cache_index(entry);
 	XA_STATE(xas, &address_space->i_pages, idx);
 	xas_set_update(&xas, workingset_update_node);
 
@@ -1528,7 +1528,7 @@ struct folio *swap_cache_get_folio(struct swap_info_struct * si, swp_entry_t ent
 	unsigned long offset_v;
 	unsigned long version;
 	bool is_stale_saved_folio;
-	offset_v = swp_offset(entry);//swp_raw_offset(entry);
+	offset_v = swp_cache_index(entry);//swp_raw_offset(entry);
 	version = swp_entry_test_special(entry);
 	is_stale_saved_folio = false;
 	// if (version){
@@ -1594,7 +1594,7 @@ static struct folio *raw_swap_cache_get_folio(struct swap_info_struct * si, swp_
 	struct folio *folio = NULL;
 	unsigned long offset_v;
 	bool is_stale_saved_folio;
-	offset_v = swp_offset(entry);
+	offset_v = swp_cache_index(entry);
 	is_stale_saved_folio = false;
 
 	if (data_race(si->flags & SWP_SYNCHRONOUS_IO) && !non_swap_entry(entry)){
@@ -1639,7 +1639,7 @@ struct folio *filemap_get_incore_folio(struct address_space *mapping,
 	si = get_swap_device(swp);
 	if (!si)
 		return NULL;
-	index = swp_offset(swp);
+	index = swp_cache_index(swp);
 	folio = filemap_get_folio(swap_address_space(swp), index);
 	put_swap_device(si);
 out:
@@ -1692,7 +1692,7 @@ struct page*__read_swap_cache_async_save(swp_entry_t entry,
 		if (!si)
 			return NULL;
 		folio = filemap_get_folio(swap_address_space(entry),
-						swp_offset(entry));
+						swp_cache_index(entry));
 		put_swap_device(si);
 
 		MULTISWAP_MIG_INFO_ON(folio, 
@@ -1827,7 +1827,7 @@ struct page *__read_swap_cache_async(swp_entry_t entry,
 			return NULL;
 		}
 		folio = filemap_get_folio(swap_address_space(entry),
-						swp_offset(entry));
+						swp_cache_index(entry));
 		put_swap_device(si);
 		if (folio)
 			return folio_file_page(folio, swp_offset(entry));
@@ -2631,6 +2631,37 @@ skip_ra_try_save:
 			 * So this page is now considered "in swap cache"
 			 * We added this page to swap cache of saved swap_entry
 			 */
+			/*
+			 * PagePilot fix: pin the FAST origin slot with its OWN
+			 * SWAP_HAS_CACHE reference BEFORE installing the folio in the
+			 * fast swap cache. saved_entry is a pre-existing stale fast slot
+			 * with count==1 (the owning PTE ref) and NO SWAP_HAS_CACHE --
+			 * unlike mig_entry, which folio_alloc_swap already reserved.
+			 * Without this pin, a concurrent do_swap_page that faults the
+			 * same PTE will swap_free(saved_entry), drop its count to 0 and
+			 * queue the slot for free WHILE this migration folio is still in
+			 * the fast cache -> the freed slot is reused under the same
+			 * version -> add_to_swap_cache collision -> kernel BUG. The pin
+			 * keeps swap_offset_any_version_occupied() true so the allocator
+			 * cannot reuse the slot mid-migration; it is released by
+			 * put_swap_folio() exactly when the folio leaves the fast cache
+			 * (vmscan dec_count / do_swap folio_free_swap).
+			 *
+			 * swapcache_prepare() is version-aware (offset_v). It can fail
+			 * if a concurrent do_swap_page already owns saved_entry: -EEXIST
+			 * (it currently holds the slot in $) or -ENOENT (it already
+			 * freed the slot). In both cases the saved data is now owned by
+			 * do_swap and our copy is stale -> abort this save cleanly
+			 * (free the mig slot, drop the folio) instead of corrupting the
+			 * already-owned slot.
+			 */
+			if (unlikely(swapcache_prepare(saved_entry))) {
+				MULTISWAP_MIG_ERR("mig pin saved_entry[%lx] cnt[%d]: taken by do_swap, abort save",
+					saved_entry.val, __swap_count(saved_entry));
+				put_swap_folio(folio, mig_entry);
+				swap_free_mig(mig_entry);
+				goto fail_page_out;
+			}
 			_err = add_to_swap_cache_save_check(folio, saved_entry, gfp_mask & (__GFP_HIGH|__GFP_NOMEMALLOC|__GFP_NOWARN), true);
 			if (unlikely(_err)) {
 				MULTISWAP_MIG_ERR("folio[%p] add_to_sw$_sc fail [%d] interupted", folio, _err);
@@ -3317,7 +3348,7 @@ subsys_initcall(swap_init_sysfs);
 void cleanup_shadow_entry_immediate(swp_entry_t entry)
 {
 	struct address_space *address_space = swap_address_space(entry);
-	pgoff_t idx = swp_offset(entry);
+	pgoff_t idx = swp_cache_index(entry);
 	void *shadow;
 	
 	if (!address_space)

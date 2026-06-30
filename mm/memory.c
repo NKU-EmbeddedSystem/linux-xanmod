@@ -1451,6 +1451,32 @@ again:
 			if (!should_zap_cows(details))
 				continue;
 			rss[MM_SWAPENTS]--;
+			/*
+			 * PagePilot fix: a COMPLETED-migration page keeps the FAST
+			 * origin entry in its PTE, but that origin slot was already
+			 * freed at migration completion. If the origin raw_offset was
+			 * since reused under a SIBLING version, _swap_info_get() still
+			 * returns the device ("any version occupied", swapfile.c
+			 * :1463-1469), so free_swap_and_cache(orientry) below resurrects
+			 * the dead old-version slot to SWAP_HAS_CACHE (swapfile.c:1565)
+			 * and frees it a SECOND time -> si->inuse_pages underflow ->
+			 * swapoff livelock; it also returns true and takes the wrong
+			 * "skip clear" else-branch that LEAKS the SLOW migentry. Detect a
+			 * completed migration by exact-version count==0 AND a present
+			 * remap, and free ONLY the SLOW migentry + the remap.
+			 */
+			{
+				swp_entry_t migdone = entry_get_migentry(entry);
+				if (migdone.val && !non_swap_entry(migdone) &&
+				    __swap_count(entry) == 0) {
+					if (unlikely(!free_swap_and_cache(migdone, false))) {
+						print_bad_pte(vma, addr, ptent, NULL);
+						BUG();
+					}
+					delete_from_swap_remap_raw(entry, migdone);
+					goto zap_swap_done;
+				}
+			}
 			if (unlikely(!free_swap_and_cache(entry, true))){
 				// if entry got freed, migentry also has to be freed
 				swp_entry_t migentry;
@@ -1504,6 +1530,8 @@ after_unmap_mig_entry:
 				// 	}
 				}
 			}
+		zap_swap_done:
+			;
 		} else if (is_migration_entry(entry)) {
 			page = pfn_swap_entry_to_page(entry);
 			if (!should_zap_page(details, page))
@@ -4414,10 +4442,32 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 				 * wb state, bio submitted but not ended yet we unset test_stalesaved, 
 				 * folio locked already so nothing bad would happen. 
 				 */
-				MULTISWAP_MIG_INFO("PF2 entry[%lx]->folio[%p] mig & remap not cleared wb[%d]sw$[%d] stale[%d] refcount[%d]", 
-					orientry.val, folio, folio_test_writeback(folio), folio_test_swapcache(folio), 
+				MULTISWAP_MIG_INFO("PF2 entry[%lx]->folio[%p] mig & remap not cleared wb[%d]sw$[%d] stale[%d] refcount[%d]",
+					orientry.val, folio, folio_test_writeback(folio), folio_test_swapcache(folio),
 					folio_test_stalesaved(folio), folio_ref_count(folio));
-				folio_clear_stalesaved(folio);	
+				/*
+				 * PagePilot fix (option A: abandon this migration, keep the
+				 * folio as a plain origin-swapcache page). The migrator's save
+				 * path double-files this folio in the swap cache at BOTH the
+				 * origin idx and the mig idx and set page_private = mig_entry.
+				 * We're interrupting mid-migration but the folio is still under
+				 * writeback, so we cannot delete-from-cache here; we hand the
+				 * teardown to the migrator's wb-complete "interrupted" branch
+				 * (check_saved_folios_wb, taken because we clear stalesaved).
+				 * That branch keys all of its cleanup off folio_swap_entry():
+				 * delete_from_swap_remap_get_mig(origin)->migentry, drop the mig
+				 * cache idx + mig slot, then swapcache_prepare(origin) to keep
+				 * the origin swapcache entry. It only works if page_private is
+				 * the ORIGIN entry -- but the save path left it = mig_entry, so
+				 * the remap lookup missed, the origin cache idx was never
+				 * removed, and the stale folio dangled at the origin idx until
+				 * the origin slot was freed+reused -> add_to_swap_cache stomp ->
+				 * BUG mm/swap_state.c:881. Reset page_private back to orientry so
+				 * the folio's identity matches the origin idx it lives at and the
+				 * migrator cleans the mig side against the correct (origin) key.
+				 */
+				set_page_private(folio_page(folio, 0), orientry.val);
+				folio_clear_stalesaved(folio);
 			}
 			else{ //read from sync IO
 				pr_info("interrupted while reclaim entry[%lx]->folio[%p] stale[%d] wb[%d]sw$[%d]st[%d] ref[%d] dt[%d]sb[%d]", 
@@ -4598,9 +4648,18 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			}
 		}else{ //invalid remap case
 			mem_cgroup_charge(folio, vma->vm_mm, GFP_KERNEL);
+			/*
+			 * PagePilot fix (minimal): always consume the PTE's reference to
+			 * the origin swap slot here, exactly like the normal swap-in path
+			 * above (unconditional swap_free). This used to live inside the
+			 * should_try_to_free_swap() branch, so the else path mapped the
+			 * page without ever dropping the origin slot's PTE reference ->
+			 * orphaned fast-device (zram) slots whose count never reaches 0,
+			 * which swapoff/try_to_unuse can never drain (busy livelock).
+			 */
+			swap_free(entry);
 			if (should_try_to_free_swap(folio, vma, vmf->flags, 2)){ //invalid
-				swap_free(entry);
-				MULTISWAP_MIG_INFO("invalid_remap after swap_free folio[%p] pri[%lx] migentry[%lx][%d]orientry[%lx][%d] $[%d]", 
+				MULTISWAP_MIG_INFO("invalid_remap after swap_free folio[%p] pri[%lx] migentry[%lx][%d]orientry[%lx][%d] $[%d]",
 					folio, folio_swap_entry(folio).val , 	migentry.val, __swap_count(migentry), 
 					orientry.val, __swap_count(orientry),  folio_test_swapcache(folio));
 				VM_BUG_ON_FOLIO(orientry.val != entry.val, folio);

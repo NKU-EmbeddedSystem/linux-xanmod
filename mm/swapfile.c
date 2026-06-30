@@ -140,7 +140,7 @@ static int __try_to_reclaim_swap(struct swap_info_struct *si,
 	swp_entry_t entry = swp_entry(si->type, offset);
 	struct folio *folio;
 	int ret = 0;
-	folio = filemap_get_folio(swap_address_space(entry), offset);
+	folio = filemap_get_folio(swap_address_space(entry), swp_cache_index(entry));
 	if (!folio)
 		return 0;
 	/*
@@ -1091,7 +1091,7 @@ checks:
 	ci = lock_cluster(si, offset); //relock
 
 	if 	(__si_can_version(si)){
-		if (version < SWAPVMAX) {//<= SWP_ENTRY_MAX_SPEC){ // 测试版我们只允许version=0,1 通过，测试正确性
+		if (0 <= version && version < SWAPVMAX) {// PagePilot: exclude version==-1 (entry_remap_usable_version returns -1 when all remap versions occupied) -> else-branch skips the slot instead of writing VERSION_OFFSET(-1)=4*offset-1 (out-of-bounds into prev offset)
 			offset_v = VERSION_OFFSET(version, offset, SWAPVMAX);
 			// if (version > 0){
 			// 	// if (usage == SWAP_HAS_CACHE)
@@ -1666,6 +1666,86 @@ static void swap_entry_free(struct swap_info_struct *p, swp_entry_t entry, int f
 	unsigned long version = (unsigned long)swp_entry_test_special(entry);
 	unsigned char count;
 	unsigned long offset_v = VERSION_OFFSET_SI(version, offset, SWAPVMAX, p);
+
+	/*
+	 * PagePilot diagnostic (one-shot, read-only): this physical slot
+	 * (raw_offset+version) is about to be freed and become reusable. By now
+	 * the folio MUST already be out of the swap cache (delete_from_swap_cache
+	 * removes it before the SWAP_HAS_CACHE ref is dropped). If a folio is
+	 * STILL installed for ANY ext variant of this slot, some caller freed the
+	 * slot without removing the folio first (ext-keying mismatch) -> a later
+	 * reuse stomps it (kernel BUG mm/swap_state.c:881). Dump the freeing
+	 * stack to pin the planter; fires at most once.
+	 */
+	{
+		static atomic_t pp_planter_caught = ATOMIC_INIT(0);
+		swp_entry_t pp_base = entry;
+		unsigned long pp_ext;
+
+		swp_entry_clear_ext(&pp_base, 0x7);
+		for (pp_ext = 0; pp_ext <= 0x7; pp_ext++) {
+			swp_entry_t pp_e = pp_base;
+			struct address_space *pp_as;
+			void *pp_x;
+
+			swp_entry_set_ext(&pp_e, pp_ext);
+			pp_as = swap_address_space(pp_e);
+			if (!pp_as)
+				continue;
+			pp_x = xa_load(&pp_as->i_pages, swp_offset(pp_e));
+			if (pp_x && !xa_is_value(pp_x)) {
+				if (atomic_cmpxchg(&pp_planter_caught, 0, 1) == 0) {
+					struct folio *pp_f = (struct folio *)pp_x;
+					swp_entry_t pp_fe = folio_swap_entry(pp_f);
+					unsigned long pp_fraw = swp_raw_offset(pp_fe);
+					unsigned long pp_fver =
+						(unsigned long)swp_entry_test_special(pp_fe);
+
+					pr_err("PP-PLANTER: freeing slot off[%lx]v[%lu] entry[%lx], but cache idx[%lx] ext[%lx] still holds obj[%px]; planter stack:",
+					       offset, version, entry.val,
+					       swp_offset(pp_e), pp_ext, pp_x);
+					/*
+					 * Decisive datum: does the stuck folio belong to
+					 * THIS slot (page_private raw_offset == offset ->
+					 * H1: teardown/race left it) or a DIFFERENT slot
+					 * (-> H2: has_cache accounted on ori/mig sibling)?
+					 * Also dump the freeing slot's raw swap_map (count |
+					 * SWAP_HAS_CACHE) and -- if same swap device -- the
+					 * folio's own slot map, to see where has_cache lives.
+					 */
+					pr_err("PP-PLANTER folio pri[%lx] fraw[%lx] fver[%lu] fext[%x] same_slot[%d] flags: $[%d] stale[%d] wb[%d] lk[%d] dt[%d] up[%d] ref[%d]",
+					       pp_fe.val, pp_fraw, pp_fver,
+					       swp_entry_test_ext(pp_fe),
+					       (pp_fraw == offset && pp_fver == version),
+					       folio_test_swapcache(pp_f),
+					       folio_test_stalesaved(pp_f),
+					       folio_test_writeback(pp_f),
+					       folio_test_locked(pp_f),
+					       folio_test_dirty(pp_f),
+					       folio_test_uptodate(pp_f),
+					       folio_ref_count(pp_f));
+					/*
+					 * Guard the folio's-own-slot swap_map read: a dangling
+					 * cached folio can have a garbage page_private (raw_offset
+					 * far beyond p->max), and VERSION_OFFSET_SI()*it would index
+					 * way out of swap_map -> OOB read -> kernel oops in the
+					 * probe itself. Only read when the cached folio's slot is a
+					 * real, same-device, in-bounds slot.
+					 */
+					pr_err("PP-PLANTER map: freeing_slot offv[%lx] map[%x]  folio_slot(valid[%d]) offv[%lx] map[%x]",
+					       offset_v, READ_ONCE(p->swap_map[offset_v]),
+					       (swp_type(pp_fe) == swp_type(entry) && pp_fraw < p->max && pp_fver < SWAPVMAX),
+					       (swp_type(pp_fe) == swp_type(entry) && pp_fraw < p->max && pp_fver < SWAPVMAX) ?
+						       VERSION_OFFSET_SI(pp_fver, pp_fraw, SWAPVMAX, p) : 0UL,
+					       (swp_type(pp_fe) == swp_type(entry) && pp_fraw < p->max && pp_fver < SWAPVMAX) ?
+						       READ_ONCE(p->swap_map[VERSION_OFFSET_SI(pp_fver, pp_fraw, SWAPVMAX, p)]) : 0);
+					dump_stack();
+				}
+				break;
+			}
+		}
+	}
+
 	ci = lock_cluster(p, offset);
 	count = p->swap_map[offset_v];
 	VM_BUG_ON(count != SWAP_HAS_CACHE);
@@ -2732,7 +2812,7 @@ retry:
 #ifdef CONFIG_LRU_GEN_STALE_SWP_ENTRY_SAVIOR_DEBUG
 		pr_info("try_to_unuse test entry[%lx] count[%d]", entry.val, __swap_count(entry));
 #endif		
-		folio = filemap_get_folio(swap_address_space(entry), i);
+		folio = filemap_get_folio(swap_address_space(entry), swp_cache_index(entry));
 		if (!folio)
 			continue;
 
