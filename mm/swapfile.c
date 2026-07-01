@@ -1741,6 +1741,28 @@ static void swap_entry_free(struct swap_info_struct *p, swp_entry_t entry, int f
 						       READ_ONCE(p->swap_map[VERSION_OFFSET_SI(pp_fver, pp_fraw, SWAPVMAX, p)]) : 0);
 					dump_stack();
 				}
+				/*
+				 * SELF-HEAL REPAIR: this physical slot is being freed
+				 * (swap_entry_free runs only once usage hit 0, leaving the
+				 * SWAP_HAS_CACHE placeholder asserted just below), so by the
+				 * folio-in-$ <=> installed invariant its swap-cache idx MUST
+				 * be empty. A non-value pointer here is a folio stranded by
+				 * an upstream teardown that dropped the SWAP_HAS_CACHE pin
+				 * without clearing the idx; it may already be freed/reused.
+				 * Drop it WITHOUT dereferencing so the reused slot cannot
+				 * inherit a dangling swap-cache entry that a later
+				 * add_to_swap_cache would stomp (mm/swap_state.c BUG). We hold
+				 * si->lock here (swapcache_free_entries); the swap-cache
+				 * xa_lock is never taken before si->lock anywhere, so
+				 * si->lock -> xa_lock has no ABBA. Re-check == pp_x under the
+				 * lock so only the exact stranded pointer is cleared.
+				 */
+				xa_lock_irq(&pp_as->i_pages);
+				if (xa_load(&pp_as->i_pages, swp_offset(pp_e)) == pp_x) {
+					__xa_store(&pp_as->i_pages, swp_offset(pp_e), NULL, 0);
+					pp_as->nrpages--;
+				}
+				xa_unlock_irq(&pp_as->i_pages);
 				break;
 			}
 		}
