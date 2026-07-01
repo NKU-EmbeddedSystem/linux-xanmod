@@ -3973,7 +3973,16 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		 *   → Shadow_ext already created, will be preserved correctly
 		 *   → This is less problematic but still indicates interrupted eviction
 		 */
-		if (!folio->shadow_ext) {
+		/* PagePilot fix (BUG include/linux/swap.h:497): swap_cache_get_folio()
+		 * returns the folio UNLOCKED. A concurrent __read_swap_cache_async()
+		 * winner may still be initializing this freshly-published folio while
+		 * holding its lock; mutating folio->shadow_ext / ->ref here without the
+		 * folio lock races with that init -> a later shadow_entry_free() on a
+		 * still-referenced (ref>0) ext -> BUG. Serialize via folio_trylock();
+		 * if we cannot lock it (another thread owns/inits it) skip this
+		 * best-effort refault accounting -- the owner sets shadow_ext correctly. */
+		bool se_locked = folio_trylock(folio);
+		if (se_locked && !folio->shadow_ext) {
 			count_memcg_event_mm(vma->vm_mm, RACE_EARLY_REFAULT_FIRST_EVICT);
 
 #ifdef CONFIG_LRU_GEN_SHADOW_ENTRY_EXT
@@ -4023,7 +4032,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			}
 #endif /* CONFIG_LRU_GEN_SHADOW_ENTRY_EXT */
 		}
-		else if (folio->shadow_ext && entry_is_entry_ext(folio->shadow_ext) == 1) {
+		else if (se_locked && folio->shadow_ext && entry_is_entry_ext(folio->shadow_ext) == 1) {
 			/* Folio has existing shadow_ext - check if in eviction race window */
 			struct shadow_entry* shadow_ext = folio->shadow_ext;
 
@@ -4060,6 +4069,8 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 				shadow_ext->race_state = SE_RACE_STATE_NORMAL;
 			}
 		}
+		if (se_locked)
+			folio_unlock(folio);
 #endif
 		swp_entry_t pri_entry;
 		pri_entry.val = page_private(page);
