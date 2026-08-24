@@ -67,6 +67,8 @@
 #include <linux/balloon_compaction.h>
 #include <linux/sched/sysctl.h>
 
+#include <linux/swap_scan_slot.h>
+#include <linux/pagepilot_overhead.h>
 #include "internal.h"
 #include "swap.h"
 
@@ -5826,8 +5828,13 @@ static int evict_folios(struct lruvec *lruvec, struct scan_control *sc, int swap
 
 #ifdef CONFIG_LRU_GEN_STALE_SWP_ENTRY_SAVIOR
 	// if (!current_is_kswapd()){
-	reclaimed_saved = check_saved_folios_wb(lruvec, pgdat, sc);
-	// sc->nr_reclaimed += reclaimed_saved;		
+	{
+		PP_OH_DECL(mgc);
+		PP_OH_BEGIN(PP_OH_MIG_COMPLETE, mgc);
+		reclaimed_saved = check_saved_folios_wb(lruvec, pgdat, sc);
+		PP_OH_END(PP_OH_MIG_COMPLETE, mgc);
+	}
+	// sc->nr_reclaimed += reclaimed_saved;
 	// }
 #endif
 retry:
@@ -6277,7 +6284,10 @@ static void swap_scan_savior(struct scan_control *sc, struct lruvec * lruvec)
 	nr_entry_scanned = nr_entry_saved = 0;
 	si = global_fastest_swap_si();
 	if (si){
+		PP_OH_DECL(msc);
+		PP_OH_BEGIN(PP_OH_MIG_SCAN, msc);
 		swap_shadow_scan_next(si, lruvec, &nr_entry_scanned, &nr_entry_saved);
+		PP_OH_END(PP_OH_MIG_SCAN, msc);
 	}
 	sc->nr_entry_scanned = nr_entry_scanned;
 	sc->nr_entry_saved = nr_entry_saved;
@@ -6285,7 +6295,9 @@ static void swap_scan_savior(struct scan_control *sc, struct lruvec * lruvec)
 
 static unsigned int swap_scan_savior_delays = 0;
 static const unsigned int swap_scan_savior_delay_max = 256;
-static unsigned int swap_scan_savior_enabled = 0;
+/* PagePilot bug#7: non-static -- the scan-queue CONSUMER in
+ * swap_scan_slot.c gates on this toggle too, not just the producer. */
+unsigned int swap_scan_savior_enabled = 0;
 unsigned int clever_swap_alloc = 0;
 
 /*
@@ -6748,6 +6760,10 @@ static ssize_t swap_scan_savior_enable_write(struct file *file, const char __use
     } else {
         swap_scan_savior_enabled = 0; // 关闭代码
     }
+	/* PagePilot bug#7: a batch left half-consumed by the previous mode
+	 * must not survive the toggle -- a route-only run would otherwise
+	 * drain stale queue state (unbounded cursor -> oops). */
+	reset_swap_scan_slot();
 	kvfree(buf);
     return count;
 }

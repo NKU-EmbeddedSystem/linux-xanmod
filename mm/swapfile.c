@@ -47,6 +47,7 @@
 #include <linux/swapops.h>
 #include <linux/swap_cgroup.h>
 #include "swap.h"
+#include "multiswap.h"
 
 #include <trace/events/lru_gen.h>
 
@@ -1683,7 +1684,11 @@ static void swap_entry_free(struct swap_info_struct *p, swp_entry_t entry, int f
 		unsigned long pp_ext;
 
 		swp_entry_clear_ext(&pp_base, 0x7);
-		for (pp_ext = 0; pp_ext <= 0x7; pp_ext++) {
+		/* PagePilot F4 (bug #4 / crash A): swap_address_space() has no
+		 * bounds check -- probing a malformed entry (raw offset beyond
+		 * the device) reads a garbage address_space and the probe
+		 * itself oopses. Skip probing such entries entirely. */
+		for (pp_ext = 0; offset < p->max && pp_ext <= 0x7; pp_ext++) {
 			swp_entry_t pp_e = pp_base;
 			struct address_space *pp_as;
 			void *pp_x;
@@ -1694,7 +1699,21 @@ static void swap_entry_free(struct swap_info_struct *p, swp_entry_t entry, int f
 				continue;
 			pp_x = xa_load(&pp_as->i_pages, swp_offset(pp_e));
 			if (pp_x && !xa_is_value(pp_x)) {
-				if (atomic_cmpxchg(&pp_planter_caught, 0, 1) == 0) {
+				/* PagePilot F4: a corrupted xarray can hand back a
+				 * non-folio garbage pointer; dereferencing it for the
+				 * diagnostics below oopses (crash A). Validate it is a
+				 * plausible struct page pointer first -- page_to_pfn is
+				 * pure arithmetic, no dereference. The self-heal further
+				 * down only compares/clears the pointer, so it stays
+				 * safe (and still removes the garbage) either way. */
+				bool pp_looks_folio =
+					IS_ALIGNED((unsigned long)pp_x, sizeof(struct page)) &&
+					pfn_valid(page_to_pfn((struct page *)pp_x));
+
+				if (!pp_looks_folio)
+					pr_err_ratelimited("PP-PLANTER: cache idx[%lx] holds non-folio garbage obj[%px] (xarray corrupted upstream), clearing without deref",
+							   swp_offset(pp_e), pp_x);
+				else if (atomic_cmpxchg(&pp_planter_caught, 0, 1) == 0) {
 					struct folio *pp_f = (struct folio *)pp_x;
 					swp_entry_t pp_fe = folio_swap_entry(pp_f);
 					unsigned long pp_fraw = swp_raw_offset(pp_fe);
@@ -2767,6 +2786,9 @@ static int try_to_unuse(unsigned int type)
 	struct folio *folio;
 	swp_entry_t entry;
 	unsigned int i;
+	/* PagePilot F2 (bug #4): bound the retry loop on leaked slots */
+	unsigned int prev_inuse = UINT_MAX;
+	int stagnant = 0;
 
 	if (!READ_ONCE(si->inuse_pages))
 		return 0;
@@ -2833,7 +2855,17 @@ retry:
 		}
 #ifdef CONFIG_LRU_GEN_STALE_SWP_ENTRY_SAVIOR_DEBUG
 		pr_info("try_to_unuse test entry[%lx] count[%d]", entry.val, __swap_count(entry));
-#endif		
+#endif
+		/* PagePilot F3 (bug #4): a malformed entry (raw offset beyond the
+		 * device) must never index swapper_spaces -- the macro has no
+		 * bounds check, an OOB read hands back a garbage address_space
+		 * and xas_start faults on its wild xa_head. Skip it; the
+		 * bounded-retry force-reclaim below clears its map count. */
+		if (unlikely(swp_raw_offset(entry) >= si->max)) {
+			WARN_ONCE(1, "try_to_unuse[%d]: malformed entry[%lx] raw_off >= max[%lx], skipping",
+				  type, entry.val, (unsigned long)si->max);
+			continue;
+		}
 		folio = filemap_get_folio(swap_address_space(entry), swp_cache_index(entry));
 		if (!folio)
 			continue;
@@ -2852,6 +2884,28 @@ retry:
 		folio_wait_writeback(folio);
 		if (entry.val == folio_swap_entry(folio).val){
 			folio_free_swap(folio);
+		} else if (folio_test_stalesaved(folio)) {
+			/* PagePilot F1 (bug #4): a stranded in-flight migration.
+			 * The workload exited before the migrator's completion
+			 * pass (check_saved_folios_wb) consumed this folio, and
+			 * that pass only runs from ITS memcg's reclaim path --
+			 * which is dead. Nobody else will ever release the
+			 * SWAP_HAS_CACHE pins, so swapoff spins forever on this
+			 * slot. Tear down both sides here, mirroring the
+			 * verified interrupted-migration branch in
+			 * check_saved_folios_wb (vmscan.c). */
+			swp_entry_t migentry = (swp_entry_t){ .val = 0 };
+
+			pr_err("try_to_unuse[%d]: reaping stranded migration folio[%p] pri[%lx] for entry[%lx]",
+			       type, folio, folio_swap_entry(folio).val, entry.val);
+			delete_from_swap_remap_get_mig(folio, entry, &migentry);
+			if (migentry.val) {
+				delete_from_swap_cache_mig(folio, migentry, true, false);
+				swap_free_mig(migentry);
+			}
+			/* drops the fast-slot SWAP_HAS_CACHE pin -> inuse_pages-- */
+			delete_from_swap_cache_mig(folio, entry, true, false);
+			folio_clear_stalesaved(folio);
 		}
 		folio_unlock(folio);
 		folio_put(folio);
@@ -2875,6 +2929,32 @@ retry:
 #ifdef CONFIG_LRU_GEN_STALE_SWP_ENTRY_SAVIOR_DEBUG
 		pr_info("try_to_unuse[%d] after left unuse[%d]", type, si->inuse_pages);
 #endif
+		/* PagePilot F2 (bug #4): the unbounded retry assumes every
+		 * remaining reference will eventually be released by someone.
+		 * Leaked slots (stranded migrations, malformed entries) never
+		 * are -- upstream's "just keep retrying" becomes a livelock
+		 * that used to force a reboot. After 3 consecutive passes with
+		 * zero progress the remaining references are by definition
+		 * unreachable: warn loudly and force-reclaim them so swapoff
+		 * terminates. The whole device is torn down right after, so
+		 * a late put on a reclaimed slot hits an inactive device and
+		 * is rejected harmlessly by get_swap_device. */
+		if (READ_ONCE(si->inuse_pages) == prev_inuse) {
+			if (++stagnant >= 3) {
+				WARN(1, "try_to_unuse[%d]: %u leaked slots survive %d full passes; force-reclaiming so swapoff can finish",
+				     type, READ_ONCE(si->inuse_pages), stagnant);
+				spin_lock(&si->lock);
+				for (i = find_next_to_unuse(si, 0); i;
+				     i = find_next_to_unuse(si, i))
+					si->swap_map[i] = 0;
+				WRITE_ONCE(si->inuse_pages, 0);
+				spin_unlock(&si->lock);
+				return 0;
+			}
+		} else {
+			prev_inuse = READ_ONCE(si->inuse_pages);
+			stagnant = 0;
+		}
 		if (!signal_pending(current))
 			goto retry;
 		return -EINTR;

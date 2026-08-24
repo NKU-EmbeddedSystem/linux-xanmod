@@ -18,9 +18,17 @@
 #include <linux/types.h>
 
 enum pp_oh_site {
-	PP_OH_MIGENTRY_LOCK,	/* do_swap_page: indirect remap lookup + lock  */
-	PP_OH_MIGENTRY_UNLOCK,	/* do_swap_page: indirect remap unlock         */
-	PP_OH_ROUTER_DECISION,	/* folio_alloc_swap: fast/slow routing choice  */
+	PP_OH_MIGENTRY_LOCK,	/* do_swap_page: remap lookup+lock, MISS outcome */
+	PP_OH_MIGENTRY_LOCK_HIT,/* do_swap_page: remap lookup+lock, HIT outcome  */
+	PP_OH_MIGENTRY_UNLOCK,	/* do_swap_page: remap unlock (hit path only)    */
+	PP_OH_ROUTER_DECISION,	/* folio_alloc_swap: fast/slow routing choice    */
+	PP_OH_TRACER_EVICT,	/* lru_gen_eviction: shadow-ext detach + pack    */
+	PP_OH_REFAULT_TRACK,	/* lru_gen_refault: distance calc + stats update */
+	PP_OH_MIG_SCAN,		/* kswapd: swap_shadow_scan_next slot batch      */
+	PP_OH_MIG_POLL,		/* fault readahead tail: empty-queue poll        */
+	PP_OH_MIG_ISSUE,	/* fault readahead tail: migration batch issue   */
+	PP_OH_MIG_COMPLETE,	/* reclaim: check_saved_folios_wb                */
+	PP_OH_CALIB,		/* empty probe window = instrumentation floor    */
 	PP_OH_NR_SITES,
 };
 
@@ -30,6 +38,17 @@ enum pp_oh_site {
 
 extern unsigned int pp_oh_sample_n[PP_OH_NR_SITES];
 void pp_oh_record(int site, u64 ns);
+
+/*
+ * Auxiliary event/gauge counters (full counts, not sampled), shown in the
+ * same debugfs table: live/peak indirect-remap mappings, migration
+ * candidates pulled from the saved-entry queue, candidates putback-retried.
+ * (abandoned = candidates - migrated(memstat demote) - putback, offline.)
+ */
+void pp_remap_live_inc(void);
+void pp_remap_live_dec(void);
+void pp_mig_candidates_inc(void);
+void pp_mig_putback_inc(void);
 
 /* Declare per-site timing scratch vars at function scope. */
 #define PP_OH_DECL(tok)						\
@@ -58,6 +77,10 @@ void pp_oh_record(int site, u64 ns);
 #define PP_OH_DECL(tok)
 #define PP_OH_BEGIN(site, tok)	do { } while (0)
 #define PP_OH_END(site, tok)	do { } while (0)
+static inline void pp_remap_live_inc(void) { }
+static inline void pp_remap_live_dec(void) { }
+static inline void pp_mig_candidates_inc(void) { }
+static inline void pp_mig_putback_inc(void) { }
 #endif /* CONFIG_PAGEPILOT_OVERHEAD_STAT */
 
 #endif /* _LINUX_PAGEPILOT_OVERHEAD_H */

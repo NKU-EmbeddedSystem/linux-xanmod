@@ -4084,7 +4084,9 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	if (__si_can_version(si)) {
 		PP_OH_BEGIN(PP_OH_MIGENTRY_LOCK, mlk);
 		migentry = entry_get_migentry_lock(entry);
-		PP_OH_END(PP_OH_MIGENTRY_LOCK, mlk);
+		/* bin the sample by outcome: hit (remap present) vs miss */
+		PP_OH_END(migentry.val ? PP_OH_MIGENTRY_LOCK_HIT
+				       : PP_OH_MIGENTRY_LOCK, mlk);
 	} else
 		migentry.val = 0;
 	if (unlikely(migentry.val)) {

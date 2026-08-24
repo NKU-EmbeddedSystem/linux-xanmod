@@ -11,6 +11,7 @@
 static DEFINE_MUTEX(swap_scan_slot_mutex);
 static DEFINE_MUTEX(swap_scan_slot_enable_mutex);
 static bool	swap_scan_slot_initialized;
+extern unsigned int swap_scan_savior_enabled; /* vmscan.c debugfs migrator toggle */
 static bool swap_scan_slot_enabled;
 static bool	swap_scan_slot_active;
 extern bool swap_scan_enabled_sysfs;
@@ -220,8 +221,27 @@ swp_entry_t get_next_saved_entry(bool* finished){
 	}
 
 	spin_lock_irq(&cache->scan_lock);
-	if (!cache->scan_stop || !use_swap_scan_slot || !cache->slots){
-		*finished = true;	
+	/* PagePilot bug#7: the consumer must be gated on the migrator toggle
+	 * too -- only the PRODUCER used to check it, so a route-only run
+	 * would drain a stale batch left over from a previous migroute run. */
+	if (!cache->scan_stop || !use_swap_scan_slot || !cache->slots ||
+	    !READ_ONCE(swap_scan_savior_enabled)){
+		*finished = true;
+		spin_unlock_irq(&cache->scan_lock);
+		return entry;
+	}
+	/* PagePilot bug#7: validate cursor state BEFORE the read. The old
+	 * exact-equality termination below never fired once cur overshot nr
+	 * (observed cur in the millions -> reads walked off the slot array
+	 * into unmapped memory -> oops). Reset on any inconsistency. */
+	if (unlikely(cache->cur < 0 || cache->cur >= cache->nr ||
+		     cache->nr > SWAP_SCAN_SLOT_SIZE)){
+		WARN_ONCE(1, "scan slot state corrupt (cur[%d] nr[%d]), resetting",
+			  cache->cur, cache->nr);
+		cache->cur = 0;
+		cache->nr = 0;
+		cache->scan_stop = false;
+		*finished = true;
 		spin_unlock_irq(&cache->scan_lock);
 		return entry;
 	}
@@ -229,7 +249,7 @@ swp_entry_t get_next_saved_entry(bool* finished){
 	entry = cache->slots[cache->cur];
 	cache->cur++;
 	*finished = false;
-	if (unlikely(cache->cur == cache->nr)){
+	if (unlikely(cache->cur >= cache->nr)){
 		cache->cur = 0;
 		cache->nr = 0;
 		cache->scan_stop = false;
@@ -239,7 +259,27 @@ swp_entry_t get_next_saved_entry(bool* finished){
 	VM_BUG_ON(non_swap_entry(entry));
 
 	return entry;
-} 
+}
+
+/*
+ * PagePilot bug#7: drop any half-consumed scan batch. Called when the
+ * migrator toggle flips so stale queue state never survives a mode
+ * switch (a route-only run must find an empty queue, not a leftover
+ * batch from the previous migroute run).
+ */
+void reset_swap_scan_slot(void)
+{
+	struct swap_scan_slot *cache = &global_swp_scan_slot;
+	unsigned long flags;
+
+	if (!swap_scan_slot_initialized || !cache->lock_initialized)
+		return;
+	spin_lock_irqsave(&cache->scan_lock, flags);
+	cache->cur = 0;
+	cache->nr = 0;
+	cache->scan_stop = false;
+	spin_unlock_irqrestore(&cache->scan_lock, flags);
+}
 
 int add_to_scan_slot(swp_entry_t entry)
 {
@@ -260,12 +300,14 @@ int add_to_scan_slot(swp_entry_t entry)
 			goto fail_add;
 		}
 		if (unlikely(non_swap_entry(entry))){
-			pr_err("add_to_scan_slot received bad entry [%lu]", entry.val);
-			spin_unlock_irq(&cache->scan_lock);
-			goto fail_add;
+			pr_err_ratelimited("add_to_scan_slot received bad entry [%lx]", entry.val);
+			goto fail_add; /* fail_add unlocks; unlocking here too was a double-unlock */
 		}
-		if (unlikely(swp_entry_test_special(entry))){
-			pr_err("add_to_scan_slot entry with special ? [%lu]", entry.val);
+		if (unlikely(swp_entry_test_special(entry) || swp_entry_test_ext(entry))){
+			/* queue must only carry plain entries; WARN captures the
+			 * producer's stack to locate who feeds malformed values */
+			WARN_ONCE(1, "add_to_scan_slot rejecting special/ext entry [%lx]", entry.val);
+			goto fail_add;
 		}
 		cache->slots[cache->nr++] = entry;
 		if (cache->nr >= SWAP_SCAN_SLOT_SIZE){ //FULL NOW

@@ -18,6 +18,7 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/xarray.h>
+#include <linux/pagepilot_overhead.h>
 
 /*DJL ADD BEGIN*/
 #include <trace/events/lru_gen.h>
@@ -486,6 +487,7 @@ static void *lru_gen_eviction(struct folio *folio, int swap_level, long swap_spa
 	struct pglist_data *pgdat = folio_pgdat(folio);
 	void* ret;
 	int is_se;
+	PP_OH_DECL(tev);
 	BUILD_BUG_ON(LRU_GEN_WIDTH + LRU_REFS_WIDTH > BITS_PER_LONG - EVICTION_SHIFT);
 
 	lruvec = mem_cgroup_lruvec(memcg, pgdat);
@@ -516,6 +518,10 @@ static void *lru_gen_eviction(struct folio *folio, int swap_level, long swap_spa
 	}
 	else{
 		is_se = 1;
+		/* PagePilot tracer, eviction side: detach shadow ext from the
+		 * folio and pack it (with history) into the cache slot.  The
+		 * !se branch above is the vanilla-equivalent pack_shadow. */
+		PP_OH_BEGIN(PP_OH_TRACER_EVICT, tev);
 #ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY
 		struct shadow_entry* shadow = folio_remove_shadow_entry(folio);
 		if (shadow){
@@ -544,11 +550,12 @@ static void *lru_gen_eviction(struct folio *folio, int swap_level, long swap_spa
 		if (ret){
 			if  (entry_is_entry_ext_debug(ret) < 1){
 				pr_err("bug in pack_shadow_ext ret[%p] se[%p]", ret, se);
-				BUG();				
+				BUG();
 			}
 		}
+		PP_OH_END(PP_OH_TRACER_EVICT, tev);
 	}
-	
+
 	if (!se)
 		trace_folio_ws_chg(folio, 0, pgdat, (unsigned short)mem_cgroup_id(memcg), token, refs, 0, swap_level, swap_space_left, (unsigned long)entry.val);
 	else{
@@ -589,6 +596,7 @@ static void lru_gen_refault(struct folio *folio, void *shadow, int* try_free_ent
 	/*DJL ADD BEGIN*/
 	int dist = -1, dist_ret = -1;
 	unsigned long lasthist = ULONG_MAX;
+	PP_OH_DECL(rft);
 	/*DJL ADD END*/
 
 	// unpack_shadow(shadow, &memcg_id, &pgdat, &token, &workingset);
@@ -607,6 +615,10 @@ static void lru_gen_refault(struct folio *folio, void *shadow, int* try_free_ent
 
 	min_seq = READ_ONCE(lrugen->min_seq[type]);
 	/*DJL ADD BEGIN*/
+	/* PagePilot refault-distance tracking: ext check + distance calc +
+	 * count/avg update + per-distance event accounting.  Ends at
+	 * skip_count so both the straight path and the goto pass the END. */
+	PP_OH_BEGIN(PP_OH_REFAULT_TRACK, rft);
 	if (entry_is_entry_ext(shadow) > 0){
 		struct shadow_entry* entry_ext = (struct shadow_entry*)shadow;
 		unsigned int current_refault_dist;
@@ -733,6 +745,7 @@ static void lru_gen_refault(struct folio *folio, void *shadow, int* try_free_ent
 		// 	*abandon_shadow = true;
 	// }
 skip_count:
+	PP_OH_END(PP_OH_REFAULT_TRACK, rft);
 	/*DJL ADD END*/
 	/*DJL ADD BEGIN*/
 #ifdef CONFIG_LRU_GEN_KEEP_REFAULT_HISTORY

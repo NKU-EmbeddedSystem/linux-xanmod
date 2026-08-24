@@ -23,6 +23,7 @@
 #include <linux/swap_scan_slot.h>
 #include <linux/huge_mm.h>
 #include <linux/shmem_fs.h>
+#include <linux/pagepilot_overhead.h>
 #include "internal.h"
 #include "swap.h"
 /*DJL ADD START*/
@@ -461,6 +462,7 @@ int add_swp_entry_remap(struct folio* folio, swp_entry_t from_entry, swp_entry_t
 			VM_WARN_ON_FOLIO(xas.xa_index != idx + i, folio);
 			VM_WARN_ON_FOLIO(from_entry.val + i != page_private(folio_page(folio, i)), folio);
 			xas_store(&xas, xa_mk_value(to_entry.val + i));
+			pp_remap_live_inc();
 			xas_next(&xas);
 		}
 		address_space->nrpages += nr;
@@ -483,9 +485,10 @@ static int add_to_swap_cache_save_check(struct folio *folio, swp_entry_t entry,
 	unsigned long message;
 
 	if (swp_entry_test_ext(entry)){
-		pr_err("add_to_swap_cache_save can't deal ext entry[%lx]", entry.val);
-		BUG();
-		return -1;
+		/* racy/stale input (slot mid-migration or mid-remap): caller
+		 * must abort this save and clean up, not crash the machine */
+		pr_err_ratelimited("add_to_swap_cache_save can't deal ext entry[%lx], reject", entry.val);
+		return -EINVAL;
 	}
 	if (entry_is_entry_ext(folio)){
 		pr_err("a buggy folio[%p] entry[%lx]", folio, entry.val);
@@ -618,13 +621,32 @@ unlock:
 }
 
 
+/* PagePilot bug#8 guard (F3/F4 family): a malformed entry (raw offset
+ * beyond the device) must never index the remap spaces --
+ * swap_address_space_remap() has no bounds check, an OOB read hands back
+ * a garbage address_space and the very first xa_lock_irq() oopses on a
+ * wild pointer (seen from zap_pte_range during exit_mmap). */
+static inline bool pp_migentry_arg_bad(swp_entry_t ori_swap)
+{
+	struct swap_info_struct *gsi = swp_swap_info(ori_swap);
+
+	if (unlikely(!gsi || swp_raw_offset(ori_swap) >= gsi->max)) {
+		pr_err_ratelimited("PP-GUARD: malformed entry[%lx] in remap lookup, ignoring",
+				   ori_swap.val);
+		return true;
+	}
+	return false;
+}
+
 swp_entry_t entry_get_migentry_lock(swp_entry_t ori_swap)
 {
 	swp_entry_t mig_swap, locked_mig;
 	struct address_space *address_space_remap;
 	mig_swap.val = 0;
+	if (pp_migentry_arg_bad(ori_swap))
+		return mig_swap;
 	address_space_remap = swap_address_space_remap(ori_swap);
-	if (!address_space_remap) 
+	if (!address_space_remap)
 		return mig_swap;
 	long nr = 1, i;
 	pgoff_t idx = swp_offset(ori_swap);
@@ -665,8 +687,10 @@ swp_entry_t entry_get_migentry_unlock(swp_entry_t ori_swap, swp_entry_t _mig_swa
 	swp_entry_t mig_swap, locked_mig;
 	struct address_space *address_space_remap;
 	mig_swap.val = 0;
+	if (pp_migentry_arg_bad(ori_swap))
+		return mig_swap;
 	address_space_remap = swap_address_space_remap(ori_swap);
-	if (!address_space_remap) 
+	if (!address_space_remap)
 		return mig_swap;
 	long i;
 	pgoff_t idx = swp_offset(ori_swap);
@@ -703,8 +727,10 @@ swp_entry_t entry_get_migentry(swp_entry_t ori_swap)
 	swp_entry_t mig_swap;
 	struct address_space *address_space_remap;
 	mig_swap.val = 0;
+	if (pp_migentry_arg_bad(ori_swap))
+		return mig_swap;
 	address_space_remap = swap_address_space_remap(ori_swap);
-	if (!address_space_remap) 
+	if (!address_space_remap)
 		return mig_swap;
 	long nr = 1, i;
 	pgoff_t idx = swp_offset(ori_swap);
@@ -990,6 +1016,8 @@ void __delete_from_swap_remap(struct folio *folio, swp_entry_t entry_from, swp_e
 
 	for (i = 0; i < nr; i++) {
 		void *entry = xas_store(&xas, NULL); //clear
+		if (entry)
+			pp_remap_live_dec();
 		tmp.val = xa_to_value(entry);
 		swp_entry_clear_ext(&tmp, 0x3);
 		if (delete_unpepared){
@@ -1017,6 +1045,8 @@ void delete_from_swap_remap_raw(swp_entry_t entry_from, swp_entry_t entry_to)
 	xa_lock_irq(&address_space_remap->i_pages);
 	for (i = 0; i < nr; i++) {
 		void *entry = xas_store(&xas, NULL); //clear
+		if (entry)
+			pp_remap_live_dec();
 		tmp.val = xa_to_value(entry);
 		swp_entry_clear_ext(&tmp, 0x3);
 
@@ -1049,8 +1079,10 @@ static void __delete_from_swap_remap_get_mig(struct folio *folio, swp_entry_t en
 
 	for (i = 0; i < nr; i++) {
 		void *entry = xas_store(&xas, NULL); //clear
+		if (entry)
+			pp_remap_live_dec();
 		tmp.val = xa_to_value(entry);
-		if (non_swap_entry(tmp)){ //entry_to.val == 0 
+		if (non_swap_entry(tmp)){ //entry_to.val == 0
 			pr_err("2[%lx]-<>[%lx] mismatch",   //means we don't care about it
 					entry_from.val,  tmp.val);
 			BUG();			
@@ -1182,9 +1214,10 @@ static void __clear_swap_remap_range(swp_entry_t entry_start, int order)
 					xas_store(&xas, xa_mk_value(tmp.val));	
 				}
 				else{
-					pr_info("__clear_swap_remap_range[%lx]->[%lx]", 
-							swp_entry(swp_type(entry_start), idx++).val,  tmp.val);					
+					pr_info("__clear_swap_remap_range[%lx]->[%lx]",
+							swp_entry(swp_type(entry_start), idx++).val,  tmp.val);
 					swap_free_mig(tmp);
+					pp_remap_live_dec();
 				}
 			}
 			address_space->nrpages -= 1;
@@ -2397,6 +2430,8 @@ static struct page *swap_vma_readahead(swp_entry_t fentry, gfp_t gfp_mask,
 	int num_folio_list_wb = 0;
 
 	int try_free, prio_ori, prio_mig, entry_saved, err;
+	PP_OH_DECL(mgp);
+	PP_OH_DECL(mgi);
 	*try_free_entry = 1;
 	struct vma_swap_readahead ra_info = {
 		.win = 1,
@@ -2484,7 +2519,10 @@ skip_ra_try_save:
 		goto skip;
 	save_slot_finish = true;
 	entry_saved = 0;
+	/* per-fault poll of the saved-entry queue (usually empty) */
+	PP_OH_BEGIN(PP_OH_MIG_POLL, mgp);
 	saved_entry = get_next_saved_entry(&save_slot_finish);
+	PP_OH_END(PP_OH_MIG_POLL, mgp);
 	if (!saved_entry.val || non_swap_entry(saved_entry)){ // can't provide now
 		if (!save_slot_finish){
 			pr_err("shouldn't happen. bad save");
@@ -2500,6 +2538,11 @@ skip_ra_try_save:
 		bool reset_private = false;
 		struct swap_info_struct* p = NULL;
 		entry_retry_putback = false;
+		/* migration-issue batch: fast-device read (zram decompress),
+		 * mig-slot alloc, remap/save-cache insert, slow-write submit.
+		 * Synchronous CPU section only -- the slow-device writeback
+		 * itself is async and completes via check_saved_folios_wb. */
+		PP_OH_BEGIN(PP_OH_MIG_ISSUE, mgi);
 		blk_start_plug(&plug_save);
 		do { //continue
 			int _err;
@@ -2507,6 +2550,7 @@ skip_ra_try_save:
 			folio = next = NULL;
 	
 			MULTISWAP_MIG_INFO("start dealing with saved entry[%lx]", saved_entry.val);
+			pp_mig_candidates_inc();
 			if (unlikely(non_swap_entry(saved_entry))){
 				goto skip_this_save;
 			}
@@ -2524,8 +2568,10 @@ skip_ra_try_save:
 			}
 
 			//valid entry, we can swapin
-			if (unlikely(swp_entry_test_special(saved_entry))){
-				pr_err("swap entry [%lx] got but special bit used !", saved_entry.val);
+			if (unlikely(swp_entry_test_special(saved_entry) ||
+				     swp_entry_test_ext(saved_entry))){
+				pr_err_ratelimited("swap entry [%lx] special/ext bit set, skip save",
+					saved_entry.val);
 				goto skip_this_save;
 			}
 			si = get_swap_device(saved_entry);
@@ -2664,23 +2710,16 @@ skip_ra_try_save:
 			}
 			_err = add_to_swap_cache_save_check(folio, saved_entry, gfp_mask & (__GFP_HIGH|__GFP_NOMEMALLOC|__GFP_NOWARN), true);
 			if (unlikely(_err)) {
-				MULTISWAP_MIG_ERR("folio[%p] add_to_sw$_sc fail [%d] interupted", folio, _err);
-				// if (_err){
-				// 	pr_err("folio[%p] add_to_sw$_save_check interupted [%d]", folio, _err);
-				// 	folio_ref_sub(folio, folio_nr_pages(folio));
-				// 	//this page was already in swap $
-				// 	goto fail_page_out;
-				// }
-				BUG();
-				// if (__swp_swapcount(saved_entry)){
-				// 	put_swap_folio(folio, saved_entry);
-				// 	goto fail_page_out;					
-				// }
-				// else{
-				// 	put_swap_folio(folio, saved_entry);
-				// 	folio_unlock(folio);
-				// 	goto fail_delete_saved_cache; //delete saved cache again
-				// }
+				MULTISWAP_MIG_ERR("folio[%p] add saved[%lx] to sw$ fail [%d], abort save",
+					folio, saved_entry.val, _err);
+				/* racy/stale saved_entry (e.g. ext bit set mid-flight):
+				 * abort THIS save only. Undo the swapcache_prepare pin
+				 * on the fast slot and release the reserved mig slot;
+				 * the migrator rescans the slot later if still stale. */
+				put_swap_folio(folio, saved_entry);
+				put_swap_folio(folio, mig_entry);
+				swap_free_mig(mig_entry);
+				goto fail_page_out;
 			}
 			MULTISWAP_MIG_INFO("folio[%p] saved[%lx]cnt[%d] ref[%d] add_to_sw$_sc success ", 
 				folio, saved_entry.val, __swp_swapcount(saved_entry), folio_ref_count(folio));
@@ -2841,6 +2880,7 @@ skip_this_save:
 			}
 			if (entry_retry_putback){
 				putback_last_saved_entry(saved_entry);
+				pp_mig_putback_inc();
 				MULTISWAP_MIG_ERR("putback entry[%lx]", saved_entry.val);
 			}
 
@@ -2901,6 +2941,7 @@ skip_this_save:
 				folio_unlock(folio);
 			}
 		}
+		PP_OH_END(PP_OH_MIG_ISSUE, mgi);
 	}
 #endif
 	lru_add_drain();
